@@ -227,6 +227,9 @@ sudo bash install.sh --update        # 升级
 
 ## 常见问题
 
+**`curl ... | bash` 报 `BASH_SOURCE[0]: unbound variable`？**
+v1.1.1 已修复。旧版脚本在 `set -u` 下通过 stdin 运行时 `BASH_SOURCE` 未设置导致报错。请重新执行最新的一键安装命令，或先下载再运行：`curl -fsSL <url> -o install.sh && sudo bash install.sh`。
+
 **管理界面打开是空白？**
 v1.0.1 已修复管理端脚本的一处语法错误。请升级到最新版（`bash install.sh --update`）并强制刷新浏览器（Ctrl+F5 / 清缓存）。若仍空白，打开浏览器控制台查看报错，并确认 `/admin/app.js` 能正常返回 200。
 
@@ -272,6 +275,9 @@ node test/domain.mjs
 
 # 一键脚本生成的配置 / Caddyfile 测试（含 CF 模式，无需 root）
 bash test/install-cf.sh
+
+# 一键脚本 stdin（curl | bash）/ --help / source 行为回归
+bash test/install-stdin.sh
 
 # 启动演示（模拟存储）
 node test/mock-telegram.mjs 9099 &
