@@ -268,10 +268,22 @@ export class IpBanList {
 export function clientIp(req, cfg) {
   let ip = req.socket.remoteAddress || '';
   if (cfg.trustProxy) {
-    const xff = req.headers['x-forwarded-for'];
-    if (typeof xff === 'string' && xff.length) {
-      const first = xff.split(',')[0].trim();
-      if (normalizeIp(first)) ip = first;
+    // 按 CDN 配置选择真实访客 IP 头：Cloudflare 默认 CF-Connecting-IP，第三方默认 XFF 首个
+    const header = cfg.realIpHeader || (cfg.cdn === 'cloudflare' || cfg.cloudflare ? 'cf-connecting-ip' : 'x-forwarded-for');
+    const xffFirst = () => {
+      const xff = req.headers['x-forwarded-for'];
+      if (typeof xff === 'string' && xff.length) {
+        const first = xff.split(',')[0].trim();
+        if (normalizeIp(first)) return first;
+      }
+      return null;
+    };
+    if (header === 'x-forwarded-for') {
+      ip = xffFirst() || ip;
+    } else {
+      const val = req.headers[header];
+      if (typeof val === 'string' && normalizeIp(val.trim())) ip = val.trim();
+      else ip = xffFirst() || ip;
     }
   }
   return normalizeIp(ip) || '0.0.0.0';

@@ -13,6 +13,8 @@ const defaults = {
   userHost: '',
   adminHost: '',
   trustProxy: true,
+  // 位于 Cloudflare 小黄云代理之后（Flexible / Full / Strict 均可）
+  cloudflare: false,
   telegramApiBase: 'https://api.telegram.org',
   maxFileSize: 128 * MB,
   chunkSize: 16 * MB,
@@ -55,6 +57,22 @@ export function loadConfig() {
   cfg.maxFileSize = Math.min(Math.max(cfg.maxFileSize, 1 * MB), 512 * MB);
   cfg.configFile = usedFile;
   cfg.hostname = os.hostname();
+  // 运行时域名覆盖（管理面板「域名」页修改后持久化于此，重启后仍生效）
+  try {
+    const dj = path.join(cfg.dataDir, 'domain.json');
+    if (fs.existsSync(dj)) {
+      const d = JSON.parse(fs.readFileSync(dj, 'utf8'));
+      for (const k of ['mode', 'userHost', 'adminHost', 'cdn', 'cdnName', 'sslMode', 'cfHttpPort', 'cfHttpsPort', 'realIpHeader', 'cfOnly']) {
+        if (d[k] !== undefined) cfg[k] = d[k];
+      }
+      cfg.cloudflare = cfg.cdn === 'cloudflare';
+    }
+  } catch (e) { console.error('[config] 读取 domain.json 失败:', e.message); }
+  // 兼容旧配置：仅有 cloudflare 布尔时推导 cdn
+  if (!cfg.cdn) cfg.cdn = cfg.cloudflare ? 'cloudflare' : 'none';
+  cfg.cloudflare = cfg.cdn === 'cloudflare';
+  if (!cfg.realIpHeader) cfg.realIpHeader = cfg.cdn === 'cloudflare' ? 'cf-connecting-ip' : 'x-forwarded-for';
+  if (!cfg.sslMode) cfg.sslMode = cfg.cdn === 'none' ? 'auto' : 'flexible';
   if (!cfg.userHost) cfg.userHost = `localhost:${cfg.port}`;
   if (cfg.mode === 'ip' && !cfg.adminHost) cfg.adminHost = cfg.userHost;
   cfg.userUrl = cfg.userHost.startsWith('http') ? cfg.userHost : `https://${cfg.userHost}`;

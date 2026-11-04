@@ -4,6 +4,7 @@
 #  支持: Debian 11 / 12 / 13, Ubuntu 22.04 / 24.04 / 26.04 (amd64 / arm64)
 #  特性: 自动检测 IP · 自动申请 HTTPS 证书 · 域名或 nip.io 自动分配
 #        管理员界面 + 用户界面 · Telegram 加密存储 · systemd 守护
+#        管理面板「域名」页：运行时换域名 / CDN / 加密模式 / 回源端口
 #
 #  用法:
 #    bash install.sh                 # 交互式（可输入域名，回车自动分配）
@@ -11,6 +12,13 @@
 #    bash install.sh --auto          # 全自动，使用 nip.io
 #    bash install.sh --update        # 升级程序（保留数据）
 #    bash install.sh --uninstall     # 卸载（可选保留数据）
+#
+#  Cloudflare 小黄云（代理）模式:
+#    bash install.sh --domain m.example.com --cloudflare \
+#         --cf-cert /path/origin.pem --cf-key /path/origin.key \
+#         --cf-http-port 80 --cf-https-port 443
+#    # 同时支持 Flexible(回源HTTP) 与 Full/Strict(回源HTTPS)；回源端口可自定义
+#    # 也可用 --cf-api-token 自动签发 Cloudflare Origin CA 证书（用于 Strict）
 #
 #  一键远程安装:
 #    curl -fsSL https://raw.githubusercontent.com/elysianki4225-png/nui/main/install.sh | bash
@@ -31,6 +39,8 @@ CADDY_DIR="/etc/caddy"
 CADDY_FILE="$CADDY_DIR/Caddyfile"
 BACKEND_PORT="8787"
 SERVICE="nui-memo"
+CF_CERT_FILE="$CONF_DIR/cf-origin.pem"
+CF_KEY_FILE="$CONF_DIR/cf-origin.key"
 
 # ---------- 输出 ----------
 if [[ -t 1 ]]; then
@@ -54,6 +64,15 @@ DO_UNINSTALL=0
 NO_FIREWALL=0
 KEEP_DATA=0
 ASSUME_YES=0
+CLOUDFLARE=0
+CF_EXPLICIT=0
+CF_CERT=""
+CF_KEY=""
+CF_API_TOKEN=""
+CF_HTTP_PORT=""
+CF_HTTPS_PORT=""
+CF_ONLY=0
+HAVE_CF_CERT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift 2;;
@@ -63,6 +82,20 @@ while [[ $# -gt 0 ]]; do
     --uninstall) DO_UNINSTALL=1; shift;;
     --no-firewall) NO_FIREWALL=1; shift;;
     --keep-data) KEEP_DATA=1; shift;;
+    --cloudflare) CLOUDFLARE=1; CF_EXPLICIT=1; shift;;
+    --no-cloudflare) CLOUDFLARE=0; CF_EXPLICIT=1; shift;;
+    --cf-cert) CF_CERT="${2:-}"; shift 2;;
+    --cf-cert=*) CF_CERT="${1#*=}"; shift;;
+    --cf-key) CF_KEY="${2:-}"; shift 2;;
+    --cf-key=*) CF_KEY="${1#*=}"; shift;;
+    --cf-api-token) CF_API_TOKEN="${2:-}"; shift 2;;
+    --cf-api-token=*) CF_API_TOKEN="${1#*=}"; shift;;
+    --cf-http-port) CF_HTTP_PORT="${2:-}"; shift 2;;
+    --cf-http-port=*) CF_HTTP_PORT="${1#*=}"; shift;;
+    --cf-https-port) CF_HTTPS_PORT="${2:-}"; shift 2;;
+    --cf-https-port=*) CF_HTTPS_PORT="${1#*=}"; shift;;
+    --origin-port) CF_HTTPS_PORT="${2:-}"; shift 2;;
+    --cf-only) CF_ONLY=1; shift;;
     -y|--yes) ASSUME_YES=1; shift;;
     -h|--help)
       cat <<'USAGE'
@@ -77,6 +110,18 @@ while [[ $# -gt 0 ]]; do
   --no-firewall   不自动配置 ufw
   --keep-data     卸载时保留数据
   -y, --yes       跳过确认
+Cloudflare 小黄云:
+  --cloudflare          启用 CF 代理模式（需自定义域名，同时支持 Flexible/Full/Strict）
+  --no-cloudflare       关闭 CF 模式（升级时改回直连）
+  --cf-cert <file>      Cloudflare Origin CA 证书 PEM（用于 Full/Strict 回源）
+  --cf-key <file>       Origin CA 私钥
+  --cf-api-token <tok>  用 CF API Token 自动签发 Origin CA 证书（需 SSL and Certificates 权限）
+  --cf-http-port <p>    Flexible 回源 HTTP 端口（默认 80）
+  --cf-https-port <p>   Full/Strict 回源 HTTPS 端口（默认 443，可用 --origin-port 别名）
+  --cf-only             防火墙仅允许 Cloudflare IP 访问回源端口
+部署后:
+  管理界面「域名」页可随时换域名（含 nip.io→自定义）、切换 Cloudflare/第三方 CDN、
+  Flexible/Full/Strict 加密、自定义回源端口（含冷门端口），无需重装。
 远程一键安装:
   curl -fsSL https://raw.githubusercontent.com/elysianki4225-png/nui/main/install.sh | bash
 USAGE
@@ -86,8 +131,6 @@ USAGE
 done
 
 # ---------- 基础检查 ----------
-[[ $EUID -eq 0 ]] || die "请以 root 运行：sudo bash install.sh"
-
 detect_os() {
   [[ -r /etc/os-release ]] || die "无法识别系统（缺少 /etc/os-release）"
   . /etc/os-release
@@ -204,6 +247,21 @@ detect_ip() {
   return 1
 }
 
+# ---------- Cloudflare 默认值（升级时复用） ----------
+resolve_cf_defaults() {
+  if [[ -f "$CONF_FILE" && -x "$APP_DIR/node/bin/node" ]]; then
+    local vals ex_cf ex_http ex_https
+    vals="$("$APP_DIR/node/bin/node" -e 'const fs=require("fs");try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log([c.cloudflare?1:0,c.cfHttpPort||"",c.cfHttpsPort||""].join("|"))}catch(e){console.log("0||")}' "$CONF_FILE")"
+    IFS='|' read -r ex_cf ex_http ex_https <<< "$vals"
+    if [[ $CF_EXPLICIT -eq 0 && "$ex_cf" == "1" ]]; then CLOUDFLARE=1; fi
+    if [[ -z "$CF_HTTP_PORT" && -n "$ex_http" ]]; then CF_HTTP_PORT="$ex_http"; fi
+    if [[ -z "$CF_HTTPS_PORT" && -n "$ex_https" ]]; then CF_HTTPS_PORT="$ex_https"; fi
+  fi
+  CF_HTTP_PORT="${CF_HTTP_PORT:-80}"
+  CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}"
+  if [[ "$CF_HTTP_PORT" == "$CF_HTTPS_PORT" ]]; then die "CF HTTP 与 HTTPS 回源端口不能相同"; fi
+}
+
 # ---------- 选择域名 ----------
 choose_domain() {
   step "配置访问域名"
@@ -215,9 +273,21 @@ choose_domain() {
     if [[ -n "$existing_user" ]]; then
       MODE="$existing_mode"; USER_HOST="$existing_user"
       ADMIN_HOST="$(grep -o '"adminHost"[^,]*' "$CONF_FILE" | head -1 | sed 's/.*: *"//;s/"//')"
+      if [[ $CLOUDFLARE -eq 1 && "$MODE" != "domain" ]]; then die "Cloudflare 模式需要自定义域名，请用 --domain 指定"; fi
       ok "复用已有域名: $USER_HOST"
       return
     fi
+  fi
+  if [[ $CLOUDFLARE -eq 1 ]]; then
+    if [[ -z "$DOMAIN" && $AUTO -eq 0 && -e /dev/tty ]]; then
+      read -r -p "  Cloudflare 模式需要你的域名: " DOMAIN </dev/tty || true
+      DOMAIN="$(echo "$DOMAIN" | tr -d '[:space:]')"
+    fi
+    [[ -n "$DOMAIN" ]] || die "Cloudflare 模式必须使用自定义域名（--domain），不能用 nip.io"
+    MODE="domain"; USER_HOST="$DOMAIN"; ADMIN_HOST=""
+    info "Cloudflare 小黄云代理模式，域名: $DOMAIN"
+    check_dns "$DOMAIN"
+    return
   fi
   if [[ -n "$DOMAIN" ]]; then
     MODE="domain"; USER_HOST="$DOMAIN"; ADMIN_HOST=""
@@ -253,6 +323,14 @@ choose_domain() {
 check_dns() {
   local d="$1" resolved=""
   resolved="$(getent ahosts "$d" 2>/dev/null | awk '{print $1; exit}')" || true
+  if [[ $CLOUDFLARE -eq 1 ]]; then
+    if [[ -z "$resolved" ]]; then
+      warn "域名 $d 目前无法解析。请在 Cloudflare 添加 A/AAAA 记录指向 $PUBLIC_IP 并开启小黄云。"
+    else
+      ok "域名已解析（Cloudflare 边缘）。请确认 DNS 记录已开启小黄云代理。"
+    fi
+    return
+  fi
   if [[ -z "$resolved" ]]; then
     warn "域名 $d 目前无法解析。请先将其 A/AAAA 记录指向 $PUBLIC_IP，否则证书申请会失败。"
   elif [[ "$resolved" != "$PUBLIC_IP" ]]; then
@@ -260,6 +338,61 @@ check_dns() {
   else
     ok "域名解析正确 ($resolved)"
   fi
+}
+
+# ---------- Cloudflare Origin CA 证书 ----------
+setup_cloudflare_cert() {
+  [[ $CLOUDFLARE -eq 1 ]] || return 0
+  step "配置 Cloudflare 回源证书"
+  HAVE_CF_CERT=0
+  if [[ -n "$CF_CERT" || -n "$CF_KEY" ]]; then
+    [[ -n "$CF_CERT" && -n "$CF_KEY" ]] || die "--cf-cert 与 --cf-key 需同时提供"
+    [[ -f "$CF_CERT" ]] || die "证书文件不存在: $CF_CERT"
+    [[ -f "$CF_KEY" ]] || die "私钥文件不存在: $CF_KEY"
+    install -m 0644 "$CF_CERT" "$CF_CERT_FILE"
+    install -m 0640 "$CF_KEY" "$CF_KEY_FILE"
+    HAVE_CF_CERT=1
+    ok "已安装 Origin CA 证书（支持 Full/Strict 回源）"
+  elif [[ -n "$CF_API_TOKEN" ]]; then
+    info "使用 Cloudflare API 自动签发 Origin CA 证书..."
+    local tmp; tmp="$(mktemp -d)"
+    if openssl req -new -newkey rsa:2048 -nodes -keyout "$tmp/origin.key" -out "$tmp/origin.csr" -subj "/CN=${USER_HOST}" >/dev/null 2>&1; then
+      local csr_json resp cert
+      csr_json="$("$APP_DIR/node/bin/node" -e 'const fs=require("fs");console.log(JSON.stringify(fs.readFileSync(process.argv[1],"utf8")))' "$tmp/origin.csr")"
+      resp="$(curl -fsS --max-time 30 -X POST "https://api.cloudflare.com/client/v4/certificates" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+        --data "{\"hostnames\":[\"${USER_HOST}\",\"*.${USER_HOST}\"],\"requested_validity\":5475,\"request_type\":\"origin-rsa\",\"csr\":${csr_json}}" 2>/dev/null)" || resp=""
+      cert="$(printf '%s' "$resp" | "$APP_DIR/node/bin/node" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);if(j.success&&j.result&&j.result.certificate)process.stdout.write(j.result.certificate);else console.error((j.errors&&j.errors[0]&&j.errors[0].message)||"API 失败")}catch(e){console.error("解析失败")}})')" || cert=""
+      if [[ -n "$cert" ]]; then
+        printf '%s\n' "$cert" > "$CF_CERT_FILE"
+        install -m 0640 "$tmp/origin.key" "$CF_KEY_FILE"
+        chmod 0644 "$CF_CERT_FILE"
+        HAVE_CF_CERT=1
+        ok "Origin CA 证书已自动签发（支持 Full/Strict 回源）"
+      else
+        warn "自动签发失败，将仅启用 HTTP 回源（Flexible）。可手动创建 Origin CA 证书后用 --cf-cert/--cf-key 重新运行。"
+      fi
+    else
+      warn "生成 CSR 失败，跳过自动签发"
+    fi
+    rm -rf "$tmp"
+  fi
+  if [[ $HAVE_CF_CERT -eq 1 ]]; then
+    chown root:caddy "$CF_CERT_FILE" "$CF_KEY_FILE" 2>/dev/null || true
+    chmod 0644 "$CF_CERT_FILE"; chmod 0640 "$CF_KEY_FILE"
+    ok "回源 HTTPS 端口 ${CF_HTTPS_PORT} 已启用（Full/Strict）"
+  else
+    warn "未提供 Origin CA 证书：仅启用 HTTP 回源（Flexible）。"
+    warn "如需 Full/Strict，请在 CF 控制台 SSL/TLS -> Origin Server 创建证书，再用 --cf-cert/--cf-key 重新运行。"
+  fi
+  # 同步 sslMode 到配置（有证书默认 full，无证书 flexible）
+  HAVE_CF_CERT="$HAVE_CF_CERT" "$APP_DIR/node/bin/node" -e '
+    const fs=require("fs");const f=process.argv[1];
+    try{const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      if(c.cdn&&c.cdn!=="none"){c.sslMode=process.env.HAVE_CF_CERT==="1"?(c.sslMode==="strict"?"strict":"full"):"flexible";
+      fs.writeFileSync(f,JSON.stringify(c,null,2));}}catch(e){}
+  ' "$CONF_FILE" 2>/dev/null || true
+  ok "回源 HTTP 端口 ${CF_HTTP_PORT} 已启用（Flexible）"
 }
 
 # ---------- 获取程序 ----------
@@ -308,6 +441,14 @@ write_config() {
   "userHost": "${USER_HOST}",
   "adminHost": "${ADMIN_HOST}",
   "trustProxy": true,
+  "cloudflare": $([[ $CLOUDFLARE -eq 1 ]] && echo true || echo false),
+  "cdn": "$([[ $CLOUDFLARE -eq 1 ]] && echo cloudflare || echo none)",
+  "cdnName": "$([[ $CLOUDFLARE -eq 1 ]] && echo Cloudflare || echo '')",
+  "sslMode": "$([[ $CLOUDFLARE -eq 1 ]] && echo flexible || echo auto)",
+  "realIpHeader": "$([[ $CLOUDFLARE -eq 1 ]] && echo cf-connecting-ip || echo x-forwarded-for)",
+  "cfOnly": $([[ $CF_ONLY -eq 1 ]] && echo true || echo false),
+  "cfHttpPort": ${CF_HTTP_PORT:-80},
+  "cfHttpsPort": ${CF_HTTPS_PORT:-443},
   "telegramApiBase": "https://api.telegram.org",
   "maxFileSize": 134217728,
   "chunkSize": 16777216,
@@ -319,13 +460,20 @@ EOF
     chmod 640 "$CONF_FILE"
     ok "配置已创建: $CONF_FILE"
   else
-    # 更新域名相关字段（保留其余）
-    local tmp; tmp="$(mktemp)"
+    # 更新域名 / Cloudflare 字段（保留其余）
     MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" \
+    CLOUDFLARE="$CLOUDFLARE" CF_ONLY="$CF_ONLY" CF_HTTP_PORT="${CF_HTTP_PORT:-80}" CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
     "$APP_DIR/node/bin/node" -e '
       const fs=require("fs");const f=process.argv[1];
       const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      const cf=process.env.CLOUDFLARE==="1";
       c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST;
+      c.cloudflare=cf;c.cdn=cf?"cloudflare":"none";c.cdnName=cf?"Cloudflare":"";
+      c.sslMode=cf?(c.sslMode&&c.sslMode!=="auto"?c.sslMode:"flexible"):"auto";
+      c.realIpHeader=cf?"cf-connecting-ip":"x-forwarded-for";
+      c.cfOnly=process.env.CF_ONLY==="1";
+      c.cfHttpPort=parseInt(process.env.CF_HTTP_PORT,10)||80;
+      c.cfHttpsPort=parseInt(process.env.CF_HTTPS_PORT,10)||443;
       fs.writeFileSync(f,JSON.stringify(c,null,2));
     ' "$CONF_FILE"
     ok "配置已更新（保留数据与机器人绑定）"
@@ -338,46 +486,64 @@ EOF
 
 # ---------- Caddyfile ----------
 write_caddyfile() {
-  step "配置 Caddy 反向代理（自动证书）"
-  {
-    echo "# 由 nui-memo 安装脚本生成"
-    echo "{"
-    echo "    admin off"
-    echo "}"
-    if [[ "$MODE" == "ip" ]]; then
-      for host in "$USER_HOST" "$ADMIN_HOST"; do
-        cat <<EOF
-
-${host} {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:${BACKEND_PORT}
-    header {
-        -Server
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-    }
-}
-EOF
-      done
-    else
-      cat <<EOF
-
-${USER_HOST} {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:${BACKEND_PORT}
-    header {
-        -Server
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-    }
-}
-EOF
-    fi
-  } > "$CADDY_FILE"
+  step "配置 Caddy 反向代理"
+  # 与管理面板「域名」页共用同一生成器（server/domain.js），保证一致
+  local cdn="none"
+  [[ $CLOUDFLARE -eq 1 ]] && cdn="cloudflare"
+  NUI_MODE="$MODE" NUI_USER_HOST="$USER_HOST" NUI_ADMIN_HOST="$ADMIN_HOST" \
+  NUI_CDN="$cdn" NUI_SSL_MODE="${SSL_MODE:-auto}" \
+  NUI_CF_HTTP_PORT="${CF_HTTP_PORT:-80}" NUI_CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
+  NUI_HAVE_CERT="$HAVE_CF_CERT" NUI_BACKEND_PORT="$BACKEND_PORT" \
+  NUI_CF_CERT_FILE="$CF_CERT_FILE" NUI_CF_KEY_FILE="$CF_KEY_FILE" \
+  "$APP_DIR/node/bin/node" "$APP_DIR/server/domain.js" caddyfile > "$CADDY_FILE"
   chmod 644 "$CADDY_FILE"
   "$CADDY_BIN" validate --config "$CADDY_FILE" >/dev/null 2>&1 && ok "Caddyfile 校验通过" || warn "Caddyfile 校验未通过，请检查"
+}
+
+# ---------- 域名管理特权应用（systemd path 触发 root helper） ----------
+write_domain_apply() {
+  step "配置域名管理自动应用"
+  cat > "$CONF_DIR/domain-apply.json" <<EOF
+{ "mode": "systemd" }
+EOF
+  chmod 644 "$CONF_DIR/domain-apply.json"
+  cat > /etc/systemd/system/${SERVICE}-domain.service <<EOF
+[Unit]
+Description=nui-memo 域名/证书自动应用（root）
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=NUI_CONF_FILE=${CONF_FILE}
+Environment=NUI_CADDY_FILE=${CADDY_FILE}
+Environment=NUI_CF_CERT_FILE=${CF_CERT_FILE}
+Environment=NUI_CF_KEY_FILE=${CF_KEY_FILE}
+Environment=NUI_CADDY_BIN=${CADDY_BIN}
+Environment=NUI_BACKEND_PORT=${BACKEND_PORT}
+Environment=NUI_DATA_DIR=${DATA_DIR}
+Environment=NUI_SERVICE=${SERVICE}
+Environment=NUI_CADDY_SERVICE=caddy
+ExecStart=${APP_DIR}/node/bin/node ${APP_DIR}/server/domain.js apply --request ${DATA_DIR}/domain-request.json
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+EOF
+  cat > /etc/systemd/system/${SERVICE}-domain.path <<EOF
+[Unit]
+Description=监听 nui-memo 域名变更请求
+
+[Path]
+PathChanged=${DATA_DIR}/domain-request.json
+Unit=${SERVICE}-domain.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable ${SERVICE}-domain.path >/dev/null 2>&1 || true
+  systemctl restart ${SERVICE}-domain.path >/dev/null 2>&1 || true
+  ok "域名管理自动应用已启用（管理面板「域名」页）"
 }
 
 # ---------- systemd ----------
@@ -449,9 +615,33 @@ setup_firewall() {
   if command -v ufw >/dev/null 2>&1; then
     if ufw status 2>/dev/null | grep -q "Status: active"; then
       step "配置防火墙 (ufw)"
-      ufw allow 80/tcp >/dev/null 2>&1 || true
-      ufw allow 443/tcp >/dev/null 2>&1 || true
-      ok "已放行 80/443"
+      if [[ $CLOUDFLARE -eq 1 ]]; then
+        if [[ $CF_ONLY -eq 1 ]]; then
+          local cfv4 cfv6 net
+          cfv4="$(curl -fsS --max-time 15 https://www.cloudflare.com/ips-v4 2>/dev/null)" || cfv4=""
+          cfv6="$(curl -fsS --max-time 15 https://www.cloudflare.com/ips-v6 2>/dev/null)" || cfv6=""
+          if [[ -n "$cfv4" ]]; then
+            for net in $cfv4 $cfv6; do
+              ufw allow from "$net" to any port "$CF_HTTP_PORT" proto tcp >/dev/null 2>&1 || true
+              if [[ $HAVE_CF_CERT -eq 1 ]]; then ufw allow from "$net" to any port "$CF_HTTPS_PORT" proto tcp >/dev/null 2>&1 || true; fi
+            done
+            ok "已仅允许 Cloudflare IP 访问回源端口"
+          else
+            warn "无法获取 Cloudflare IP 列表，改为放行回源端口（建议手动限制来源）"
+            ufw allow "$CF_HTTP_PORT"/tcp >/dev/null 2>&1 || true
+            if [[ $HAVE_CF_CERT -eq 1 ]]; then ufw allow "$CF_HTTPS_PORT"/tcp >/dev/null 2>&1 || true; fi
+          fi
+        else
+          ufw allow "$CF_HTTP_PORT"/tcp >/dev/null 2>&1 || true
+          if [[ $HAVE_CF_CERT -eq 1 ]]; then ufw allow "$CF_HTTPS_PORT"/tcp >/dev/null 2>&1 || true; fi
+          ok "已放行回源端口 ${CF_HTTP_PORT}$([[ $HAVE_CF_CERT -eq 1 ]] && echo "/${CF_HTTPS_PORT}")"
+          info "建议: 加 --cf-only 可仅允许 Cloudflare IP 回源，防止绕过 CDN 直连"
+        fi
+      else
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+        ok "已放行 80/443"
+      fi
     fi
   fi
 }
@@ -504,6 +694,7 @@ print_summary() {
   echo "   2. 在「机器人」页绑定你的 Telegram Bot Token 与 Chat ID"
   echo "      (先向机器人发一条消息，再点「自动检测」获取 Chat ID)"
   echo "   3. 打开用户界面注册数字账号，妥善保存密钥，开始使用"
+  echo "   4. 如需换域名 / 套 CDN：管理界面「域名」页可随时修改（含 nip.io 换自定义域名）"
   echo
   echo "  常用命令:"
   echo "   查看状态:  systemctl status ${SERVICE} caddy"
@@ -511,7 +702,19 @@ print_summary() {
   echo "   升级程序:  bash install.sh --update"
   echo "   卸载:      bash install.sh --uninstall"
   echo
-  if [[ "$MODE" == "ip" ]]; then
+  if [[ $CLOUDFLARE -eq 1 ]]; then
+    echo "  ${C_BOLD}Cloudflare 小黄云设置:${C_RESET}"
+    echo "   - DNS 记录指向本机并开启小黄云（代理）"
+    echo "   - SSL/TLS 模式选 Flexible：回源走 HTTP 端口 ${C_BOLD}${CF_HTTP_PORT}${C_RESET}"
+    if [[ $HAVE_CF_CERT -eq 1 ]]; then
+      echo "   - SSL/TLS 模式选 Full / Strict：回源走 HTTPS 端口 ${C_BOLD}${CF_HTTPS_PORT}${C_RESET}（已装 Origin CA 证书）"
+    else
+      echo "   - 如需 Full / Strict：请先配置 Origin CA 证书（--cf-cert/--cf-key 或 --cf-api-token）"
+    fi
+    echo "   - 若回源端口非 80/443，请在 CF「Rules -> Origin Rules」把 Destination Port 设为上述端口"
+    echo "   - 源站已禁用强制 HTTPS 跳转，Flexible 不会重定向循环"
+    echo "   - 建议关闭 Rocket Loader；HSTS 由 Cloudflare 边缘下发"
+  elif [[ "$MODE" == "ip" ]]; then
     echo "  ${C_DIM}提示: nip.io 域名证书由 Let's Encrypt 自动签发与续期。${C_RESET}"
     echo "  ${C_DIM}若证书签发稍慢，请稍候 1-2 分钟后刷新。${C_RESET}"
   else
@@ -523,9 +726,10 @@ print_summary() {
 # ---------- 卸载 ----------
 uninstall() {
   step "卸载 备忘录"
-  systemctl stop ${SERVICE} caddy 2>/dev/null || true
-  systemctl disable ${SERVICE} caddy 2>/dev/null || true
-  rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service
+  systemctl stop ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
+  systemctl disable ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
+  rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service \
+        /etc/systemd/system/${SERVICE}-domain.service /etc/systemd/system/${SERVICE}-domain.path
   systemctl daemon-reload
   rm -rf "$APP_DIR" "$CONF_DIR" "$CADDY_FILE"
   if [[ $KEEP_DATA -eq 1 ]]; then
@@ -547,12 +751,14 @@ main() {
   echo "  备忘录 (nui-memo) 一键部署"
   echo "  端到端加密 · Telegram 存储 · 自动 HTTPS"
   echo "${C_RESET}"
+  [[ $EUID -eq 0 ]] || die "请以 root 运行：sudo bash install.sh"
   [[ $DO_UNINSTALL -eq 1 ]] && uninstall
   detect_os
   detect_arch
   install_deps
   install_node
   install_caddy
+  resolve_cf_defaults
   if ! detect_ip; then
     die "无法检测公网 IP，请检查网络后重试"
   fi
@@ -560,12 +766,16 @@ main() {
   choose_domain
   fetch_app
   write_config
+  setup_cloudflare_cert
   write_caddyfile
   write_systemd
+  write_domain_apply
   setup_firewall
   start_services
   health_check
   print_summary
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

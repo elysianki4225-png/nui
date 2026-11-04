@@ -273,6 +273,43 @@ export function registerAdminRoutes(h, ctx) {
     return { ok: true, reauth: true };
   });
 
+  // ---- 域名 / CDN 管理 ----
+  route('GET', '/api/admin/domain', async (req) => {
+    requireAdmin(req);
+    return { ok: true, ...ctx.domain.current() };
+  });
+
+  route('POST', '/api/admin/domain/check', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 4096);
+    const result = await ctx.domain.check(body.host);
+    return { ok: true, ...result };
+  });
+
+  route('POST', '/api/admin/domain/preview', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 64 * 1024);
+    const result = ctx.domain.preview(body);
+    return { ok: true, ...result };
+  });
+
+  route('POST', '/api/admin/domain', async (req, res, params, ip) => {
+    requireAdmin(req);
+    if (!limiter.allow(`domain:${ip}`, 30, 3600)) throw new HttpError(429, '域名修改过于频繁，请稍后再试', 'RATE_LIMIT');
+    const body = await readJson(req, 256 * 1024);
+    const extras = { certPem: body.certPem, keyPem: body.keyPem, cfApiToken: body.cfApiToken };
+    const result = await ctx.domain.apply(body, extras);
+    return { ok: true, ...result };
+  });
+
+  route('GET', '/api/admin/domain/result', async (req) => {
+    requireAdmin(req);
+    const url = new URL(req.url, 'http://x');
+    const id = url.searchParams.get('id') || '';
+    const r = id ? ctx.domain.poll(id) : ctx.domain.readResult();
+    return { ok: true, result: r || null };
+  });
+
   // ---- 审计 / 系统 ----
   route('GET', '/api/admin/audit', async (req) => {
     requireAdmin(req);
