@@ -92,6 +92,7 @@ const PAGES = [
   { id: 'users', icon: 'group', label: '用户' },
   { id: 'ipbans', icon: 'gpp_bad', label: 'IP 封禁' },
   { id: 'bots', icon: 'smart_toy', label: '机器人' },
+  { id: 'domain', icon: 'language', label: '域名' },
   { id: 'settings', icon: 'settings', label: '设置' },
   { id: 'audit', icon: 'history', label: '审计' },
 ];
@@ -139,7 +140,7 @@ function renderPage() {
   scroll.append(page);
   c.append(scroll);
   S.el.page = page;
-  ({ overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
+  ({ overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
 }
 
 function pageHead(title, ...actions) {
@@ -515,6 +516,188 @@ async function renderBots(page) {
   loadBots();
 }
 function maskToken(t) { if (!t) return ''; return t.length <= 12 ? t.slice(0, 3) + '•••' : t.slice(0, 6) + '••••••' + t.slice(-4); }
+
+// ============================ 域名 / CDN 管理 ============================
+async function renderDomain(page) {
+  page.append(pageHead('域名管理', h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: () => renderPage() }, icon('refresh'), '刷新')));
+  page.append(h('div', { class: 'auth-note', style: { marginBottom: '16px' } }, icon('info'),
+    h('span', {}, '即使部署时用的是 nip.io，也可在这里随时换成自己的域名。支持 Cloudflare 小黄云与第三方 CDN，加密可选 Flexible / Full / Strict，回源端口可自定义（含冷门端口）。')));
+  const wrap = h('div');
+  page.append(wrap, loadingEl());
+  let data;
+  try { data = await GET('/api/admin/domain'); } catch (e) { toast(e.message, { type: 'error' }); return; }
+  page.querySelector('.empty-state')?.remove();
+
+  const f = { ...data.settings, certPem: '', keyPem: '', cfApiToken: '' };
+  const statusPanel = h('div', { class: 'panel' });
+  const formWrap = h('div');
+  const resultWrap = h('div');
+  wrap.append(statusPanel, formWrap, resultWrap);
+
+  function urlRow(label, url) {
+    return h('div', { class: 'kv' }, h('div', { class: 'k' }, label),
+      h('div', { class: 'v row gap-4', style: { alignItems: 'center', flexWrap: 'wrap' } },
+        h('a', { href: url, target: '_blank', rel: 'noopener', class: 'mono', style: { wordBreak: 'break-all' } }, url),
+        h('button', { class: 'icon-btn stateful', title: '复制', onClick: () => copyText(url) }, icon('content_copy'))));
+  }
+  function renderStatus(d) {
+    clear(statusPanel);
+    const modeLabel = d.applyMode === 'systemd' || d.applyMode === 'sudo' ? '自动应用' : d.applyMode === 'inline' ? '热更新' : '手动应用';
+    statusPanel.append(
+      h('div', { class: 'panel-head' }, icon('public'), h('h3', {}, '当前访问'),
+        h('span', { class: `badge ${d.canApply ? 'success' : 'warning'}` }, modeLabel),
+        h('span', { class: `badge ${d.haveCert ? 'success' : 'neutral'}` }, d.haveCert ? '已装回源证书' : '无回源证书')),
+      h('div', { class: 'kv-grid' }, urlRow('用户界面', d.urls.userUrl), urlRow('管理界面', d.urls.adminUrl)));
+    if (!d.canApply) statusPanel.append(h('div', { class: 'auth-note mt-16' }, icon('warning'),
+      h('span', {}, '当前未启用特权自动应用：保存后后端会热更新，但 Caddy 与证书需按返回的 Caddyfile 手动应用。用一键脚本部署可启用自动应用。')));
+  }
+  renderStatus(data);
+
+  function seg(options, get, set) {
+    const el = h('div', { class: 'segmented', style: { flexWrap: 'wrap' } });
+    for (const [id, label] of options) {
+      el.append(h('button', { class: get() === id ? 'selected' : '', onClick: (e) => { set(id); [...el.children].forEach((b) => b.classList.remove('selected')); e.currentTarget.classList.add('selected'); renderForm(); } }, label));
+    }
+    return el;
+  }
+  function field(label, input, helper) {
+    return h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' }, input, h('span', { class: 'tf-label' }, label)), helper ? h('span', { class: 'tf-helper' }, helper) : null);
+  }
+  function text(key, placeholder, opts = {}) {
+    const input = h('input', { class: 'tf-input', placeholder: ' ', value: f[key] ?? '', ...opts });
+    input.addEventListener('input', () => { f[key] = input.value; });
+    return input;
+  }
+  function num(key, min, max) {
+    const input = h('input', { class: 'tf-input', type: 'number', min: String(min), max: String(max), placeholder: ' ', value: String(f[key] ?? '') });
+    input.addEventListener('input', () => { f[key] = parseInt(input.value, 10); });
+    return input;
+  }
+
+  const dnsResult = h('div', { class: 'md-body-s', style: { marginTop: '8px' } });
+  function renderForm() {
+    clear(formWrap);
+    const cdnOn = f.cdn !== 'none';
+    // 域名 panel
+    const domainPanel = h('div', { class: 'panel' },
+      h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '访问域名')),
+      h('div', { style: { marginBottom: '12px' } }, seg([['domain', '自定义域名'], ['ip', 'nip.io / IP']], () => f.mode, (v) => { f.mode = v; })),
+      field('用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
+      f.mode === 'ip' ? field('管理子域名', text('adminHost', 'admin.example.com', { spellcheck: 'false' }), 'IP 模式下管理端使用独立子域名') : null,
+      h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
+        h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析')),
+      dnsResult);
+    // CDN panel
+    const cdnPanel = h('div', { class: 'panel' },
+      h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, 'CDN 代理')),
+      h('div', { style: { marginBottom: '12px' } }, seg([['none', '直连（无 CDN）'], ['cloudflare', 'Cloudflare 小黄云'], ['custom', '第三方 CDN']], () => f.cdn, (v) => { f.cdn = v; if (v === 'cloudflare') f.realIpHeader = 'cf-connecting-ip'; else if (v === 'custom') f.realIpHeader = 'x-forwarded-for'; })),
+      f.cdn === 'custom' ? field('CDN 名称', text('cdnName', '例如 阿里云 CDN / 腾讯云 EdgeOne')) : null,
+      cdnOn ? h('div', {},
+        h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, '加密模式（CDN 到源站）'),
+        h('div', { style: { marginBottom: '12px' } }, seg([['flexible', 'Flexible（HTTP 回源）'], ['full', 'Full'], ['strict', 'Strict']], () => f.sslMode, (v) => { f.sslMode = v; })),
+        h('div', { class: 'two-col' },
+          field('回源 HTTP 端口', num('cfHttpPort', 1, 65535), 'Flexible 使用，默认 80'),
+          field('回源 HTTPS 端口', num('cfHttpsPort', 1, 65535), 'Full/Strict 使用，默认 443，可填冷门端口')),
+        h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' },
+          (() => { const sel = h('select', { class: 'tf-input' }, ...[['cf-connecting-ip', 'CF-Connecting-IP（Cloudflare）'], ['x-forwarded-for', 'X-Forwarded-For（首个 IP）'], ['x-real-ip', 'X-Real-IP'], ['true-client-ip', 'True-Client-IP']].map(([v, l]) => h('option', { value: v, selected: f.realIpHeader === v }, l))); sel.addEventListener('change', () => { f.realIpHeader = sel.value; }); return sel; })(),
+          h('span', { class: 'tf-label' }, '真实访客 IP 头'))),
+        f.cdn === 'cloudflare' ? h('div', { class: 'settings-row', style: { padding: '8px 0' } },
+          h('div', { class: 's-content' }, h('div', { class: 's-title' }, '仅允许 Cloudflare IP 回源'), h('div', { class: 's-sub' }, '防火墙只放行 CF 节点，防止绕过 CDN 直连源站')),
+          (() => { const sw = h('input', { type: 'checkbox', checked: f.cfOnly }); sw.addEventListener('change', () => { f.cfOnly = sw.checked; }); return h('label', { class: 'switch' }, sw, h('span', { class: 'switch-track' }, h('span', { class: 'switch-thumb' }))); })()) : null,
+      ) : h('p', { class: 'muted md-body-m' }, "直连模式由 Caddy 自动申请 Let's Encrypt 证书（需域名解析到本机且开放 80/443）。"));
+    // 证书 panel（仅 CDN）
+    let certPanel = null;
+    if (cdnOn) {
+      const certTa = h('textarea', { class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
+      certTa.addEventListener('input', () => { f.certPem = certTa.value; });
+      const keyTa = h('textarea', { class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
+      keyTa.addEventListener('input', () => { f.keyPem = keyTa.value; });
+      certPanel = h('div', { class: 'panel' },
+        h('div', { class: 'panel-head' }, icon('lock'), h('h3', {}, '回源证书（Full / Strict）'),
+          h('span', { class: `badge ${data.haveCert ? 'success' : 'neutral'}` }, data.haveCert ? '已安装' : '未安装')),
+        h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, 'Strict 需要受 CDN 信任的回源证书。Cloudflare 可在 SSL/TLS → Origin Server 创建 Origin CA 证书后粘贴到下方；或填写 API Token 自动签发。留空则沿用已安装证书或仅用 Flexible。'),
+        field('证书 PEM（certificate）', certTa),
+        field('私钥 PEM（private key）', keyTa),
+        f.cdn === 'cloudflare' ? field('Cloudflare API Token（可选，自动签发）', text('cfApiToken', '需 SSL and Certificates 权限', { spellcheck: 'false' })) : null);
+    }
+    // 操作
+    const actions = h('div', { class: 'row end gap-8 wrap', style: { marginTop: '16px' } },
+      h('button', { class: 'btn btn-outlined stateful', onClick: preview }, icon('description'), '预览 Caddyfile'),
+      h('button', { class: 'btn btn-filled stateful', onClick: apply }, icon('save'), '应用更改'));
+    formWrap.append(domainPanel, cdnPanel, certPanel, actions);
+  }
+
+  async function checkDns() {
+    clear(dnsResult); dnsResult.append(h('span', { class: 'muted' }, '解析中…'));
+    try {
+      const r = await POST('/api/admin/domain/check', { host: f.userHost });
+      clear(dnsResult);
+      if (r.error) { dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, r.error)); return; }
+      dnsResult.append(h('span', { class: 'muted' }, '解析到：'), h('span', { class: 'mono' }, r.addresses.join(', ')),
+        r.cloudflare ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, 'Cloudflare 边缘') : h('span', { class: 'badge neutral', style: { marginLeft: '8px' } }, '非 CF IP'));
+    } catch (e) { clear(dnsResult); dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); }
+  }
+
+  async function preview() {
+    try {
+      const r = await POST('/api/admin/domain/preview', f);
+      const pre = h('pre', { class: 'mono md-body-s', style: { background: 'var(--md-surface-container)', padding: '12px', borderRadius: '8px', overflow: 'auto', maxHeight: '320px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, r.caddyfile);
+      openDialog({
+        title: 'Caddyfile 预览', titleIcon: 'description', wide: true,
+        content: h('div', {}, r.warnings.length ? h('div', { class: 'auth-note', style: { marginBottom: '12px' } }, icon('warning'), h('span', {}, r.warnings.join(' '))) : null, pre),
+        actions: [{ label: '复制', variant: 'tonal', icon: 'content_copy', onClick: () => copyText(r.caddyfile) }, { label: '关闭', variant: 'text' }],
+      });
+    } catch (e) { toast(e.message, { type: 'error' }); }
+  }
+
+  async function apply() {
+    const ok = await confirmDialog({ title: '应用域名更改', message: '将更新域名 / CDN / 回源端口并重载代理。若域名发生变化，当前会话会失效，需要到新域名重新登录。确定继续？', confirmLabel: '应用', icon: 'language' });
+    if (!ok) return;
+    clear(resultWrap);
+    let r;
+    try { r = await POST('/api/admin/domain', f); }
+    catch (e) { clear(resultWrap); toast(e.message, { type: 'error' }); return; }
+    if (r.applying) {
+      // 特权应用：先展示新网址（域名变更后旧域名可能立即不可达），再后台轮询结果
+      showResult({ ok: true, applying: true, urls: r.urls, warnings: r.warnings, settings: r.settings });
+      let result = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((res) => setTimeout(res, 1500));
+        try { const p = await GET(`/api/admin/domain/result?id=${encodeURIComponent(r.id)}`); if (p.result) { result = p.result; break; } } catch {}
+      }
+      if (result) showResult(result);
+      else resultWrap.append(h('div', { class: 'auth-note mt-16' }, icon('info'), h('span', {}, '若长时间未生效，请检查服务状态（systemctl status nui-memo caddy），或直接打开上方新网址确认。')));
+      return;
+    }
+    showResult(r);
+  }
+
+  function showResult(r) {
+    clear(resultWrap);
+    const title = r.applying ? '正在应用' : r.ok ? '已应用' : '应用失败';
+    const panel = h('div', { class: 'panel' },
+      h('div', { class: 'panel-head' }, icon(r.applying ? 'schedule' : r.ok ? 'check_circle' : 'error'), h('h3', {}, title),
+        h('span', { class: `badge ${r.ok ? 'success' : 'warning'}` }, r.applying ? '重载中' : r.ok ? '成功' : '失败')));
+    if (r.applying) panel.append(h('div', { class: 'auth-note mt-16' }, icon('info'), h('span', {}, '服务可能短暂重启。若域名已变更，当前会话会失效，请打开下方新管理网址重新登录。')));
+    if (r.error) panel.append(h('div', { class: 'auth-note', style: { background: 'var(--md-error-container)', color: 'var(--md-on-error-container)' } }, icon('error'), h('span', {}, r.error)));
+    if (r.warnings && r.warnings.length) panel.append(h('div', { class: 'auth-note mt-16' }, icon('warning'), h('span', {}, r.warnings.join(' '))));
+    if (r.ok && r.urls) {
+      panel.append(h('div', { class: 'kv-grid mt-16' }, urlRow('新用户界面', r.urls.userUrl), urlRow('新管理界面', r.urls.adminUrl)),
+        h('div', { class: 'row gap-8 wrap mt-16' },
+          h('a', { class: 'btn btn-filled btn-sm stateful', href: r.urls.adminUrl, target: '_blank', rel: 'noopener' }, icon('open_in_new'), '打开新管理界面'),
+          h('a', { class: 'btn btn-outlined btn-sm stateful', href: r.urls.userUrl, target: '_blank', rel: 'noopener' }, icon('open_in_new'), '打开用户界面')));
+    }
+    if (r.caddyfile && (r.manual || !r.ok)) {
+      panel.append(h('div', { class: 'md-body-s muted mt-16' }, r.instructions || '请手动应用以下 Caddyfile：'),
+        h('pre', { class: 'mono md-body-s', style: { background: 'var(--md-surface-container)', padding: '12px', borderRadius: '8px', overflow: 'auto', maxHeight: '280px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, r.caddyfile));
+    }
+    resultWrap.append(panel);
+    if (r.ok && !r.applying) { toast('域名设置已应用', { type: 'success' }); GET('/api/admin/domain').then(renderStatus).catch(() => {}); }
+  }
+
+  renderForm();
+  if (data.lastResult && !data.lastResult.ok) showResult(data.lastResult);
+}
 
 // ============================ 设置 ============================
 async function renderSettings(page) {

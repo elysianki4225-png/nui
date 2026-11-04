@@ -149,6 +149,29 @@ sudo bash install.sh --domain m.example.com --cloudflare --cf-only ...
 
 ---
 
+## 域名管理（管理面板，运行时切换）
+
+部署后无需重装，在**管理界面 →「域名」**页即可随时调整：
+
+- **换域名**：哪怕安装时用的是 nip.io，也能直接改成自己的域名（或改回 nip.io / IP 模式）。
+- **CDN 代理**：支持 **Cloudflare 小黄云** 与 **第三方 CDN**（阿里云 / 腾讯云 EdgeOne 等），也可切回直连。
+- **加密模式**：Flexible（HTTP 回源）/ Full / Strict（HTTPS 回源），随时切换。
+- **自定义回源端口**：HTTP / HTTPS 回源端口均可自定义，**冷门端口**也支持（配合 CDN 的回源端口规则）。
+- **回源证书**：粘贴 Origin CA 证书 + 私钥，或填 Cloudflare API Token 自动签发；Strict 无证书时自动回退 Flexible 并提示。
+- **真实访客 IP**：Cloudflare 默认 `CF-Connecting-IP`；第三方可选 `X-Forwarded-For` / `X-Real-IP` / `True-Client-IP`，限流与 IP 封禁据此识别。
+- **辅助工具**：DNS 解析检测（并判断是否落在 Cloudflare 边缘）、Caddyfile 预览、仅允许 CF IP 回源开关。
+
+应用机制：
+
+- 一键脚本部署会安装一个 **systemd path + root helper**（`nui-memo-domain.path/.service`）。面板提交后由 root helper 写入证书 / 配置 / Caddyfile，`caddy validate` 校验通过后重载 Caddy 并重启后端，全程自动。
+- 后端会**热更新**域名相关行为（路由、Cookie、真实 IP、HSTS），并把设置持久化到 `DATA_DIR/domain.json`，重启后仍生效。
+- 若未启用特权自动应用（如手动运行），面板会热更新后端并给出完整 Caddyfile 与手动应用指引。
+- 安装脚本与管理面板**共用同一个 Caddyfile 生成器**（`server/domain.js`），保证两者输出一致。
+
+> 注意：域名变更后，旧域名上的登录会话会失效，请到新域名重新登录。面板会显示新的用户 / 管理网址并提供一键打开。
+
+---
+
 ## 隐私与威胁模型
 
 **管理员能看到什么？**
@@ -180,7 +203,7 @@ sudo bash install.sh --update        # 升级
 - **数据目录**：`/var/lib/nui-memo`（`snapshot.json` + `events.jsonl`）。备份此目录即可备份账号/封禁/绑定（内容在 Telegram）。
 - **配置**：`/etc/nui-memo/config.json`。
 - **程序**：`/opt/nui-memo`。
-- 修改域名：`sudo bash install.sh --update --domain new.example.com`。
+- 修改域名 / CDN / 回源端口：推荐在管理界面「域名」页直接修改（运行时生效，见下文）；也可 `sudo bash install.sh --update --domain new.example.com`。
 
 ### 主要配置项（`config.json`）
 
@@ -192,6 +215,11 @@ sudo bash install.sh --update        # 升级
 | `uploadConcurrency` | 3 | 全局上传并发 |
 | `uploadQueueMB` | 96 | 上传队列内存上限 |
 | `telegramApiBase` | `https://api.telegram.org` | 可指向自建 Bot API 服务器 |
+| `cdn` | `none` | `none` / `cloudflare` / `custom`（第三方 CDN） |
+| `sslMode` | `auto` | 直连 `auto`；CDN 下 `flexible` / `full` / `strict` |
+| `cfHttpPort` / `cfHttpsPort` | 80 / 443 | CDN 回源 HTTP / HTTPS 端口（可自定义冷门端口） |
+| `realIpHeader` | 按 CDN | 真实访客 IP 头：`cf-connecting-ip` / `x-forwarded-for` / `x-real-ip` / `true-client-ip` |
+| `cfOnly` | false | 防火墙仅允许 Cloudflare IP 回源 |
 
 站点级设置（注册开关、单文件上限、会话时长、自动锁定、公告）在管理界面「设置」页调整。
 
@@ -203,7 +231,10 @@ sudo bash install.sh --update        # 升级
 v1.0.1 已修复管理端脚本的一处语法错误。请升级到最新版（`bash install.sh --update`）并强制刷新浏览器（Ctrl+F5 / 清缓存）。若仍空白，打开浏览器控制台查看报错，并确认 `/admin/app.js` 能正常返回 200。
 
 **套了 Cloudflare 小黄云后打不开 / 重定向循环？**
-使用 `--cloudflare` 模式部署。Flexible 必须走 HTTP 回源端口且源站不强制跳转（脚本已处理）；Full/Strict 需要 Origin CA 证书并走 HTTPS 回源端口。详见上文 Cloudflare 章节。
+使用 `--cloudflare` 模式部署，或在管理界面「域名」页把 CDN 设为 Cloudflare 并选对加密模式。Flexible 必须走 HTTP 回源端口且源站不强制跳转（已处理）；Full/Strict 需要 Origin CA 证书并走 HTTPS 回源端口。详见上文 Cloudflare 与域名管理章节。
+
+**部署后想换域名 / 套第三方 CDN / 改回源端口？**
+管理界面「域名」页可随时修改，无需重装。支持 nip.io 换自定义域名、Cloudflare 与第三方 CDN、Flexible/Full/Strict、自定义（含冷门）回源端口。域名变更后请到新域名重新登录。
 
 **国内用户图片打不开？**
 图片/视频均经你的 VPS 中转（`/api/user/memos/:id/...`），浏览器不直连 `t.me`，只要 VPS 能访问 Telegram 即可正常预览。
@@ -236,6 +267,9 @@ node test/smoke.mjs
 # Cloudflare 后端行为测试（真实 IP / Secure Cookie / HSTS / 封禁）
 node test/cloudflare.mjs
 
+# 域名 / CDN 管理测试（校验 / Caddyfile / 特权应用 / API 热切换 / 重启持久化）
+node test/domain.mjs
+
 # 一键脚本生成的配置 / Caddyfile 测试（含 CF 模式，无需 root）
 bash test/install-cf.sh
 
@@ -257,7 +291,9 @@ nui/
 │   ├── index.js            入口 / HTTP / 安全头 / IP 封禁
 │   ├── api*.js             公共 / 用户 / 管理员 API
 │   ├── store.js            内存索引 + 事件日志 + 快照
-│   ├── security.js         哈希 / 会话 / 限流 / CIDR 匹配
+│   ├── security.js         哈希 / 会话 / 限流 / CIDR 匹配 / 真实 IP
+│   ├── domain.js           域名校验 / Caddyfile 生成 / 特权应用
+│   ├── domain-manager.js   运行时域名管理（热更新 / 持久化 / 应用调度）
 │   ├── telegram.js         机器人池 / 限速队列 / 流式中转
 │   └── static.js           静态资源 / Host 路由
 ├── web/

@@ -5,7 +5,8 @@ import { Sessions, RateLimiter, IpBanList, clientIp } from './security.js';
 import { TelegramPool } from './telegram.js';
 import { createApi } from './api.js';
 import { createStatic } from './static.js';
-import { sendError, isHttps, VERSION } from './util.js';
+import { sendError, isHttps, VERSION, behindCdn } from './util.js';
+import { DomainManager } from './domain-manager.js';
 
 const cfg = loadConfig();
 const store = new Store(cfg.dataDir);
@@ -25,7 +26,8 @@ store.log = (ev) => {
   if (ev.t === 'ban.add' || ev.t === 'ban.remove' || ev.t === 'ban.update') ipBans.rebuild(store.state.ipBans);
 };
 
-const ctx = { cfg, store, sessions, pool, ipBans, limiter, startedAt };
+const domain = new DomainManager(cfg, store);
+const ctx = { cfg, store, sessions, pool, ipBans, limiter, startedAt, domain };
 const handleApi = createApi(ctx);
 const handleStatic = createStatic(cfg);
 
@@ -48,8 +50,8 @@ function securityHeaders(req, res) {
   ];
   if (!cfg.dev) csp.push("frame-ancestors 'self'");
   res.setHeader('Content-Security-Policy', csp.join('; '));
-  // Cloudflare 模式下 HSTS 交给 CF 边缘下发，避免 Flexible 回源时的冲突
-  if (isHttps(req, cfg) && !cfg.cloudflare) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // CDN 代理模式下 HSTS 交给边缘下发，避免 Flexible 回源时的冲突
+  if (isHttps(req, cfg) && !behindCdn(cfg)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 }
 
 const server = http.createServer(async (req, res) => {

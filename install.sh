@@ -4,6 +4,7 @@
 #  支持: Debian 11 / 12 / 13, Ubuntu 22.04 / 24.04 / 26.04 (amd64 / arm64)
 #  特性: 自动检测 IP · 自动申请 HTTPS 证书 · 域名或 nip.io 自动分配
 #        管理员界面 + 用户界面 · Telegram 加密存储 · systemd 守护
+#        管理面板「域名」页：运行时换域名 / CDN / 加密模式 / 回源端口
 #
 #  用法:
 #    bash install.sh                 # 交互式（可输入域名，回车自动分配）
@@ -118,6 +119,9 @@ Cloudflare 小黄云:
   --cf-http-port <p>    Flexible 回源 HTTP 端口（默认 80）
   --cf-https-port <p>   Full/Strict 回源 HTTPS 端口（默认 443，可用 --origin-port 别名）
   --cf-only             防火墙仅允许 Cloudflare IP 访问回源端口
+部署后:
+  管理界面「域名」页可随时换域名（含 nip.io→自定义）、切换 Cloudflare/第三方 CDN、
+  Flexible/Full/Strict 加密、自定义回源端口（含冷门端口），无需重装。
 远程一键安装:
   curl -fsSL https://raw.githubusercontent.com/elysianki4225-png/nui/main/install.sh | bash
 USAGE
@@ -381,6 +385,13 @@ setup_cloudflare_cert() {
     warn "未提供 Origin CA 证书：仅启用 HTTP 回源（Flexible）。"
     warn "如需 Full/Strict，请在 CF 控制台 SSL/TLS -> Origin Server 创建证书，再用 --cf-cert/--cf-key 重新运行。"
   fi
+  # 同步 sslMode 到配置（有证书默认 full，无证书 flexible）
+  HAVE_CF_CERT="$HAVE_CF_CERT" "$APP_DIR/node/bin/node" -e '
+    const fs=require("fs");const f=process.argv[1];
+    try{const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      if(c.cdn&&c.cdn!=="none"){c.sslMode=process.env.HAVE_CF_CERT==="1"?(c.sslMode==="strict"?"strict":"full"):"flexible";
+      fs.writeFileSync(f,JSON.stringify(c,null,2));}}catch(e){}
+  ' "$CONF_FILE" 2>/dev/null || true
   ok "回源 HTTP 端口 ${CF_HTTP_PORT} 已启用（Flexible）"
 }
 
@@ -431,6 +442,11 @@ write_config() {
   "adminHost": "${ADMIN_HOST}",
   "trustProxy": true,
   "cloudflare": $([[ $CLOUDFLARE -eq 1 ]] && echo true || echo false),
+  "cdn": "$([[ $CLOUDFLARE -eq 1 ]] && echo cloudflare || echo none)",
+  "cdnName": "$([[ $CLOUDFLARE -eq 1 ]] && echo Cloudflare || echo '')",
+  "sslMode": "$([[ $CLOUDFLARE -eq 1 ]] && echo flexible || echo auto)",
+  "realIpHeader": "$([[ $CLOUDFLARE -eq 1 ]] && echo cf-connecting-ip || echo x-forwarded-for)",
+  "cfOnly": $([[ $CF_ONLY -eq 1 ]] && echo true || echo false),
   "cfHttpPort": ${CF_HTTP_PORT:-80},
   "cfHttpsPort": ${CF_HTTPS_PORT:-443},
   "telegramApiBase": "https://api.telegram.org",
@@ -446,12 +462,16 @@ EOF
   else
     # 更新域名 / Cloudflare 字段（保留其余）
     MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" \
-    CLOUDFLARE="$CLOUDFLARE" CF_HTTP_PORT="${CF_HTTP_PORT:-80}" CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
+    CLOUDFLARE="$CLOUDFLARE" CF_ONLY="$CF_ONLY" CF_HTTP_PORT="${CF_HTTP_PORT:-80}" CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
     "$APP_DIR/node/bin/node" -e '
       const fs=require("fs");const f=process.argv[1];
       const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      const cf=process.env.CLOUDFLARE==="1";
       c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST;
-      c.cloudflare=process.env.CLOUDFLARE==="1";
+      c.cloudflare=cf;c.cdn=cf?"cloudflare":"none";c.cdnName=cf?"Cloudflare":"";
+      c.sslMode=cf?(c.sslMode&&c.sslMode!=="auto"?c.sslMode:"flexible"):"auto";
+      c.realIpHeader=cf?"cf-connecting-ip":"x-forwarded-for";
+      c.cfOnly=process.env.CF_ONLY==="1";
       c.cfHttpPort=parseInt(process.env.CF_HTTP_PORT,10)||80;
       c.cfHttpsPort=parseInt(process.env.CF_HTTPS_PORT,10)||443;
       fs.writeFileSync(f,JSON.stringify(c,null,2));
@@ -467,76 +487,63 @@ EOF
 # ---------- Caddyfile ----------
 write_caddyfile() {
   step "配置 Caddy 反向代理"
-  {
-    echo "# 由 nui-memo 安装脚本生成"
-    echo "{"
-    echo "    admin off"
-    if [[ $CLOUDFLARE -eq 1 ]]; then echo "    auto_https off"; fi
-    echo "}"
-    if [[ $CLOUDFLARE -eq 1 ]]; then
-      cat <<EOF
-
-# Cloudflare Flexible 回源（HTTP，不强制跳转，避免重定向循环）
-http://${USER_HOST}:${CF_HTTP_PORT} {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:${BACKEND_PORT}
-    header {
-        -Server
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-    }
-}
-EOF
-      if [[ $HAVE_CF_CERT -eq 1 ]]; then
-        cat <<EOF
-
-# Cloudflare Full/Strict 回源（HTTPS，Origin CA 证书）
-https://${USER_HOST}:${CF_HTTPS_PORT} {
-    tls ${CF_CERT_FILE} ${CF_KEY_FILE}
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:${BACKEND_PORT}
-    header {
-        -Server
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-    }
-}
-EOF
-      fi
-    elif [[ "$MODE" == "ip" ]]; then
-      for host in "$USER_HOST" "$ADMIN_HOST"; do
-        cat <<EOF
-
-${host} {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:${BACKEND_PORT}
-    header {
-        -Server
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-    }
-}
-EOF
-      done
-    else
-      cat <<EOF
-
-${USER_HOST} {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:${BACKEND_PORT}
-    header {
-        -Server
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
-    }
-}
-EOF
-    fi
-  } > "$CADDY_FILE"
+  # 与管理面板「域名」页共用同一生成器（server/domain.js），保证一致
+  local cdn="none"
+  [[ $CLOUDFLARE -eq 1 ]] && cdn="cloudflare"
+  NUI_MODE="$MODE" NUI_USER_HOST="$USER_HOST" NUI_ADMIN_HOST="$ADMIN_HOST" \
+  NUI_CDN="$cdn" NUI_SSL_MODE="${SSL_MODE:-auto}" \
+  NUI_CF_HTTP_PORT="${CF_HTTP_PORT:-80}" NUI_CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
+  NUI_HAVE_CERT="$HAVE_CF_CERT" NUI_BACKEND_PORT="$BACKEND_PORT" \
+  NUI_CF_CERT_FILE="$CF_CERT_FILE" NUI_CF_KEY_FILE="$CF_KEY_FILE" \
+  "$APP_DIR/node/bin/node" "$APP_DIR/server/domain.js" caddyfile > "$CADDY_FILE"
   chmod 644 "$CADDY_FILE"
   "$CADDY_BIN" validate --config "$CADDY_FILE" >/dev/null 2>&1 && ok "Caddyfile 校验通过" || warn "Caddyfile 校验未通过，请检查"
+}
+
+# ---------- 域名管理特权应用（systemd path 触发 root helper） ----------
+write_domain_apply() {
+  step "配置域名管理自动应用"
+  cat > "$CONF_DIR/domain-apply.json" <<EOF
+{ "mode": "systemd" }
+EOF
+  chmod 644 "$CONF_DIR/domain-apply.json"
+  cat > /etc/systemd/system/${SERVICE}-domain.service <<EOF
+[Unit]
+Description=nui-memo 域名/证书自动应用（root）
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=NUI_CONF_FILE=${CONF_FILE}
+Environment=NUI_CADDY_FILE=${CADDY_FILE}
+Environment=NUI_CF_CERT_FILE=${CF_CERT_FILE}
+Environment=NUI_CF_KEY_FILE=${CF_KEY_FILE}
+Environment=NUI_CADDY_BIN=${CADDY_BIN}
+Environment=NUI_BACKEND_PORT=${BACKEND_PORT}
+Environment=NUI_DATA_DIR=${DATA_DIR}
+Environment=NUI_SERVICE=${SERVICE}
+Environment=NUI_CADDY_SERVICE=caddy
+ExecStart=${APP_DIR}/node/bin/node ${APP_DIR}/server/domain.js apply --request ${DATA_DIR}/domain-request.json
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+EOF
+  cat > /etc/systemd/system/${SERVICE}-domain.path <<EOF
+[Unit]
+Description=监听 nui-memo 域名变更请求
+
+[Path]
+PathChanged=${DATA_DIR}/domain-request.json
+Unit=${SERVICE}-domain.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable ${SERVICE}-domain.path >/dev/null 2>&1 || true
+  systemctl restart ${SERVICE}-domain.path >/dev/null 2>&1 || true
+  ok "域名管理自动应用已启用（管理面板「域名」页）"
 }
 
 # ---------- systemd ----------
@@ -687,6 +694,7 @@ print_summary() {
   echo "   2. 在「机器人」页绑定你的 Telegram Bot Token 与 Chat ID"
   echo "      (先向机器人发一条消息，再点「自动检测」获取 Chat ID)"
   echo "   3. 打开用户界面注册数字账号，妥善保存密钥，开始使用"
+  echo "   4. 如需换域名 / 套 CDN：管理界面「域名」页可随时修改（含 nip.io 换自定义域名）"
   echo
   echo "  常用命令:"
   echo "   查看状态:  systemctl status ${SERVICE} caddy"
@@ -718,9 +726,10 @@ print_summary() {
 # ---------- 卸载 ----------
 uninstall() {
   step "卸载 备忘录"
-  systemctl stop ${SERVICE} caddy 2>/dev/null || true
-  systemctl disable ${SERVICE} caddy 2>/dev/null || true
-  rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service
+  systemctl stop ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
+  systemctl disable ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
+  rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service \
+        /etc/systemd/system/${SERVICE}-domain.service /etc/systemd/system/${SERVICE}-domain.path
   systemctl daemon-reload
   rm -rf "$APP_DIR" "$CONF_DIR" "$CADDY_FILE"
   if [[ $KEEP_DATA -eq 1 ]]; then
@@ -760,6 +769,7 @@ main() {
   setup_cloudflare_cert
   write_caddyfile
   write_systemd
+  write_domain_apply
   setup_firewall
   start_services
   health_check
