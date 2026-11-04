@@ -776,6 +776,8 @@ main() {
   print_summary
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# 通过 stdin 运行（curl ... | bash）时 BASH_SOURCE 未设置，set -u 下需回退到 $0，
+# 否则报 "BASH_SOURCE[0]: unbound variable"。回退后 stdin 场景判定为直接执行，正常进入 main。
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
   main "$@"
 fi
