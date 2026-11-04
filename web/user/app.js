@@ -62,6 +62,7 @@ function render() {
 // ============================ 认证 ============================
 let authTab = 'login';
 function renderAuth() {
+  clear($app); // 切换登录/注册标签时重绘，避免卡片叠加
   const wrap = h('div', { class: 'auth-wrap' });
   const card = h('div', { class: 'auth-card' });
   card.append(h('div', { class: 'auth-logo' },
@@ -252,7 +253,7 @@ const NAV = [
 ];
 
 function renderMain() {
-  const shell = h('div', { class: 'shell' });
+  const shell = h('div', { class: 'shell shell-user' });
   const rail = h('nav', { class: 'nav-rail' });
   rail.append(h('div', { style: { marginBottom: '8px', color: 'var(--md-primary)' } }, icon('sticky_note_2', 'lg')));
   for (const n of NAV) {
@@ -261,21 +262,39 @@ function renderMain() {
   }
   const main = h('div', { class: 'main' });
   const topbar = h('header', { class: 'top-bar' },
+    h('button', { class: 'icon-btn stateful nav-toggle', title: '打开菜单', 'aria-label': '打开菜单', onClick: () => S.el.openDrawer?.() }, icon('menu')),
     h('div', { class: 'top-bar-title' }, icon('sticky_note_2'), h('span', {}, S.config?.siteName || '备忘录')),
     h('button', { class: 'icon-btn stateful', title: '切换主题', onClick: (e) => { toggleTheme(); } }, icon(currentTheme() === 'dark' ? 'light_mode' : 'dark_mode')),
     h('button', { class: 'icon-btn stateful', title: '账号', onClick: (e) => accountMenu(e.currentTarget) }, icon('account_circle')),
   );
   const content = h('div', { class: 'content' });
   main.append(topbar, content);
-  const navbar = h('nav', { class: 'nav-bar' });
-  for (const n of NAV) {
-    navbar.append(h('button', { class: `nav-bar-item stateful ${S.tab === n.id ? 'active' : ''}`, onClick: () => switchTab(n.id) },
-      h('span', { class: 'nav-indicator' }, icon(n.icon)), h('span', {}, n.label)));
-  }
   const fab = h('button', { class: 'fab fab-main extended stateful', title: '新建备忘录', onClick: () => openEditor() }, icon('add'), h('span', {}, '新建'));
-  shell.append(rail, main, navbar, fab);
+  shell.append(rail, main, fab);
   $app.append(shell);
-  S.el = { content, topbar, fab, rail, navbar };
+
+  // 移动端侧边抽屉
+  const drawerItems = [];
+  const drawer = h('nav', { class: 'nav-drawer', 'aria-label': '导航' },
+    h('div', { class: 'drawer-head' },
+      h('div', { class: 'drawer-logo' }, icon('sticky_note_2')),
+      h('div', { class: 'title' }, S.config?.siteName || '备忘录'),
+      h('button', { class: 'icon-btn stateful', title: '关闭菜单', onClick: () => S.el.closeDrawer?.() }, icon('close'))),
+    h('div', { class: 'drawer-section' }, formatAccount(S.account)));
+  for (const n of NAV) {
+    const item = h('button', { class: `nav-drawer-item stateful ${S.tab === n.id ? 'active' : ''}`, onClick: () => { switchTab(n.id); S.el.closeDrawer?.(); } }, icon(n.icon), h('span', {}, n.label));
+    drawerItems.push(item); drawer.append(item);
+  }
+  drawer.append(h('div', { class: 'drawer-divider' }),
+    h('div', { class: 'drawer-foot' },
+      h('button', { class: 'nav-drawer-item stateful', onClick: () => { S.el.closeDrawer?.(); lock(); } }, icon('lock'), h('span', {}, '立即锁定')),
+      h('button', { class: 'nav-drawer-item stateful', onClick: () => { toggleTheme(); } }, icon(currentTheme() === 'dark' ? 'light_mode' : 'dark_mode'), h('span', {}, '切换主题')),
+      h('button', { class: 'nav-drawer-item danger stateful', onClick: () => { S.el.closeDrawer?.(); logout(); } }, icon('logout'), h('span', {}, '退出登录'))));
+  const scrim = h('div', { class: 'drawer-scrim', onClick: (e) => { if (e.target === scrim) S.el.closeDrawer?.(); } }, drawer);
+  $app.append(scrim);
+
+  S.el = { content, topbar, fab, rail, drawerItems, scrim,
+    openDrawer: () => scrim.classList.add('show'), closeDrawer: () => scrim.classList.remove('show') };
   S.shellBuilt = true;
   renderTab();
 }
@@ -284,10 +303,9 @@ function switchTab(tab) {
   if (S.tab === tab) return;
   S.tab = tab;
   exitSelectMode();
-  for (const el of [...S.el.rail.querySelectorAll('.nav-rail-item'), ...S.el.navbar.querySelectorAll('.nav-bar-item')]) el.classList.remove('active');
   const idx = NAV.findIndex((n) => n.id === tab);
-  S.el.rail.querySelectorAll('.nav-rail-item')[idx]?.classList.add('active');
-  S.el.navbar.querySelectorAll('.nav-bar-item')[idx]?.classList.add('active');
+  [...S.el.rail.querySelectorAll('.nav-rail-item')].forEach((el, i) => el.classList.toggle('active', i === idx));
+  (S.el.drawerItems || []).forEach((el, i) => el.classList.toggle('active', i === idx));
   S.el.fab.classList.toggle('hidden', tab !== 'memos');
   renderTab();
 }
