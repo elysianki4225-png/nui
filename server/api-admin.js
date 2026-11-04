@@ -1,0 +1,294 @@
+import os from 'node:os';
+import { HttpError, readJson, nowSec, clampInt, formatBytes, randomId } from './util.js';
+import { hashSecret, verifySecret, parseIpRule } from './security.js';
+import { VERSION } from './util.js';
+
+function userDTO(u, store) {
+  return {
+    account: u.account, createdAt: u.createdAt, lastSeen: u.lastSeen, banned: !!u.banned,
+    stats: store.userStats(u.account),
+  };
+}
+
+function maskToken(t) {
+  if (!t) return '';
+  if (t.length <= 12) return t.slice(0, 3) + '•••';
+  return t.slice(0, 6) + '••••••' + t.slice(-4);
+}
+
+export function registerAdminRoutes(h, ctx) {
+  const { route, requireAdmin } = h;
+  const { cfg, store, pool, limiter, ipBans, startedAt } = ctx;
+
+  function systemInfo() {
+    const mem = process.memoryUsage();
+    return {
+      version: VERSION,
+      node: process.version,
+      platform: `${os.type()} ${os.release()} ${os.arch()}`,
+      hostname: os.hostname(),
+      uptimeSec: Math.floor(process.uptime()),
+      systemUptimeSec: Math.floor(os.uptime()),
+      loadavg: os.loadavg().map((x) => +x.toFixed(2)),
+      cpuCount: os.cpus().length,
+      totalMemMB: Math.round(os.totalmem() / 1048576),
+      freeMemMB: Math.round(os.freemem() / 1048576),
+      processRssMB: +(mem.rss / 1048576).toFixed(1),
+      processHeapMB: +(mem.heapUsed / 1048576).toFixed(1),
+      dataDir: cfg.dataDir,
+      mode: cfg.mode,
+      userUrl: cfg.userUrl,
+      adminUrl: cfg.adminUrl,
+    };
+  }
+
+  route('GET', '/api/admin/overview', async (req) => {
+    requireAdmin(req);
+    const totals = store.totals();
+    const users = Object.values(store.state.users);
+    const dayAgo = nowSec() - 86400;
+    const weekAgo = nowSec() - 7 * 86400;
+    return {
+      ok: true,
+      totals: { ...totals, bytesHuman: formatBytes(totals.bytes) },
+      active24h: users.filter((u) => u.lastSeen >= dayAgo).length,
+      active7d: users.filter((u) => u.lastSeen >= weekAgo).length,
+      new24h: users.filter((u) => u.createdAt >= dayAgo).length,
+      storageReady: pool.bots().length > 0,
+      telegram: pool.stats(),
+      system: systemInfo(),
+      recentAudit: store.state.audit.slice(-12).reverse(),
+      registrationOpen: store.state.settings.registrationOpen,
+    };
+  });
+
+  // ---- 用户管理 ----
+  route('GET', '/api/admin/users', async (req) => {
+    requireAdmin(req);
+    const url = new URL(req.url, 'http://x');
+    const query = (url.searchParams.get('query') || '').trim();
+    const filter = url.searchParams.get('filter') || 'all';
+    const limit = clampInt(url.searchParams.get('limit'), 1, 200, 50);
+    const offset = clampInt(url.searchParams.get('offset'), 0, 1e9, 0);
+    let users = Object.values(store.state.users);
+    if (query) users = users.filter((u) => u.account.includes(query.replace(/\D/g, '')));
+    if (filter === 'banned') users = users.filter((u) => u.banned);
+    if (filter === 'active') users = users.filter((u) => !u.banned);
+    users.sort((a, b) => b.createdAt - a.createdAt);
+    const total = users.length;
+    const items = users.slice(offset, offset + limit).map((u) => userDTO(u, store));
+    return { ok: true, items, total, offset, limit };
+  });
+
+  route('GET', '/api/admin/users/:account', async (req, res, params) => {
+    requireAdmin(req);
+    const u = store.state.users[params.account];
+    if (!u) throw new HttpError(404, '账号不存在', 'NOT_FOUND');
+    return { ok: true, user: userDTO(u, store) };
+  });
+
+  route('POST', '/api/admin/users/batch', async (req) => {
+    const { session } = requireAdmin(req);
+    const body = await readJson(req, 256 * 1024);
+    const accounts = Array.isArray(body.accounts) ? body.accounts.slice(0, 2000) : [];
+    const action = String(body.action || '');
+    let affected = 0;
+    for (const account of accounts) {
+      const u = store.state.users[account];
+      if (!u) continue;
+      if (action === 'ban') { store.log({ t: 'user.update', account, patch: { banned: true } }); ctx.sessions.deleteForAccount(account); affected++; }
+      else if (action === 'unban') { store.log({ t: 'user.update', account, patch: { banned: false } }); affected++; }
+      else if (action === 'delete') {
+        const arr = store.accountIndex.get(account) || [];
+        for (const m of [...arr]) {
+          store.log({ t: 'memo.delete', id: m.id });
+          for (const p of m.parts || []) pool.deleteMessage(p.botId, p.messageId);
+          if (m.thumb) pool.deleteMessage(m.thumb.botId, m.thumb.messageId);
+        }
+        store.log({ t: 'user.delete', account });
+        ctx.sessions.deleteForAccount(account);
+        affected++;
+      }
+    }
+    store.audit(store.state.admin?.username || 'admin', `users.${action}`, `批量操作 ${affected} 个账号`);
+    return { ok: true, affected };
+  });
+
+  // ---- IP 封禁 ----
+  route('GET', '/api/admin/ip-bans', async (req) => {
+    requireAdmin(req);
+    const url = new URL(req.url, 'http://x');
+    const query = (url.searchParams.get('query') || '').trim().toLowerCase();
+    let bans = Object.values(store.state.ipBans);
+    if (query) bans = bans.filter((b) => b.rule.toLowerCase().includes(query) || (b.note || '').toLowerCase().includes(query));
+    bans.sort((a, b) => b.createdAt - a.createdAt);
+    return { ok: true, items: bans, total: bans.length, activeRules: ipBans.count };
+  });
+
+  route('POST', '/api/admin/ip-bans', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 1 * 1024 * 1024);
+    const lines = Array.isArray(body.rules) ? body.rules : String(body.text || '').split(/[\n,;]+/);
+    const existing = new Set(Object.values(store.state.ipBans).map((b) => b.rule));
+    const added = [], errors = [];
+    for (const raw of lines.slice(0, 5000)) {
+      const line = String(raw).trim();
+      if (!line) continue;
+      try {
+        const parsed = parseIpRule(line);
+        if (existing.has(parsed.label)) { errors.push({ rule: line, error: '已存在' }); continue; }
+        const ban = { id: randomId(8), rule: parsed.label, note: parsed.note || '', family: parsed.family, enabled: true, createdAt: nowSec() };
+        store.log({ t: 'ban.add', ban });
+        existing.add(parsed.label);
+        added.push(ban);
+      } catch (e) {
+        errors.push({ rule: line, error: e.message });
+      }
+    }
+    ipBans.rebuild(store.state.ipBans);
+    store.audit(store.state.admin?.username || 'admin', 'ipban.add', `新增 ${added.length} 条封禁规则`);
+    return { ok: true, added: added.length, errors };
+  });
+
+  route('POST', '/api/admin/ip-bans/batch', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 256 * 1024);
+    const ids = Array.isArray(body.ids) ? body.ids.slice(0, 5000) : [];
+    const action = String(body.action || '');
+    let affected = 0;
+    for (const id of ids) {
+      const b = store.state.ipBans[id];
+      if (!b) continue;
+      if (action === 'delete') { store.log({ t: 'ban.remove', id }); affected++; }
+      else if (action === 'enable') { store.log({ t: 'ban.update', id, patch: { enabled: true } }); affected++; }
+      else if (action === 'disable') { store.log({ t: 'ban.update', id, patch: { enabled: false } }); affected++; }
+    }
+    ipBans.rebuild(store.state.ipBans);
+    store.audit(store.state.admin?.username || 'admin', `ipban.${action}`, `批量操作 ${affected} 条规则`);
+    return { ok: true, affected };
+  });
+
+  // ---- Telegram 机器人 ----
+  route('GET', '/api/admin/bots', async (req) => {
+    requireAdmin(req);
+    return { ok: true, items: store.state.bots, stats: pool.stats() };
+  });
+
+  route('POST', '/api/admin/bots/test', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 4096);
+    const token = String(body.token || '').trim();
+    const chatId = String(body.chatId || '').trim();
+    if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) throw new HttpError(400, 'Bot Token 格式不正确', 'BAD_TOKEN');
+    const result = await pool.testBinding(token, chatId || null);
+    return {
+      ok: true,
+      bot: { id: result.me.id, username: result.me.username, firstName: result.me.first_name },
+      chat: result.chat ? { id: String(result.chat.id), type: result.chat.type, title: result.chat.title || result.chat.username || [result.chat.first_name, result.chat.last_name].filter(Boolean).join(' ') } : null,
+    };
+  });
+
+  route('POST', '/api/admin/bots/detect', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 4096);
+    const token = String(body.token || '').trim();
+    if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) throw new HttpError(400, 'Bot Token 格式不正确', 'BAD_TOKEN');
+    const chats = await pool.detectChat(token);
+    return { ok: true, chats };
+  });
+
+  route('POST', '/api/admin/bots', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 4096);
+    const name = String(body.name || '').trim().slice(0, 40) || '存储机器人';
+    const token = String(body.token || '').trim();
+    const chatId = String(body.chatId || '').trim();
+    if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) throw new HttpError(400, 'Bot Token 格式不正确', 'BAD_TOKEN');
+    if (!chatId) throw new HttpError(400, '请填写 Chat ID（可点击自动检测）', 'BAD_CHAT');
+    if (store.state.bots.some((b) => b.token === token && String(b.chatId) === chatId)) throw new HttpError(409, '该机器人+聊天已绑定', 'DUP_BOT');
+    const result = await pool.testBinding(token, chatId);
+    const bot = {
+      id: randomId(8), name, token, chatId, enabled: true, addedAt: nowSec(),
+      username: result.me.username, lastError: null, lastOkAt: nowSec(),
+    };
+    store.log({ t: 'bot.add', bot });
+    pool.syncWorkers();
+    store.audit(store.state.admin?.username || 'admin', 'bot.add', `绑定机器人 @${bot.username} -> ${chatId}`);
+    return { ok: true, bot };
+  });
+
+  route('POST', '/api/admin/bots/:id/toggle', async (req, res, params) => {
+    requireAdmin(req);
+    const b = store.state.bots.find((x) => x.id === params.id);
+    if (!b) throw new HttpError(404, '机器人不存在', 'NOT_FOUND');
+    store.log({ t: 'bot.update', id: params.id, patch: { enabled: !b.enabled } });
+    pool.syncWorkers();
+    return { ok: true, enabled: !b.enabled };
+  });
+
+  route('DELETE', '/api/admin/bots/:id', async (req, res, params) => {
+    requireAdmin(req);
+    const b = store.state.bots.find((x) => x.id === params.id);
+    if (!b) throw new HttpError(404, '机器人不存在', 'NOT_FOUND');
+    store.log({ t: 'bot.remove', id: params.id });
+    pool.syncWorkers();
+    store.audit(store.state.admin?.username || 'admin', 'bot.remove', `移除机器人 @${b.username || b.name}`);
+    return { ok: true };
+  });
+
+  // ---- 设置 ----
+  route('GET', '/api/admin/settings', async (req) => {
+    requireAdmin(req);
+    return { ok: true, settings: store.state.settings, limits: { maxFileSize: cfg.maxFileSize, chunkSize: cfg.chunkSize } };
+  });
+
+  route('PATCH', '/api/admin/settings', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 8192);
+    const patch = {};
+    const s = store.state.settings;
+    if (typeof body.siteName === 'string' && body.siteName.trim()) patch.siteName = body.siteName.trim().slice(0, 30);
+    if (typeof body.registrationOpen === 'boolean') patch.registrationOpen = body.registrationOpen;
+    if (body.maxFileSizeMB != null) patch.maxFileSizeMB = clampInt(body.maxFileSizeMB, 1, 512, s.maxFileSizeMB);
+    if (body.userSessionDays != null) patch.userSessionDays = clampInt(body.userSessionDays, 1, 365, s.userSessionDays);
+    if (body.adminSessionHours != null) patch.adminSessionHours = clampInt(body.adminSessionHours, 1, 168, s.adminSessionHours);
+    if (body.autoLockMinutes != null) patch.autoLockMinutes = clampInt(body.autoLockMinutes, 0, 1440, s.autoLockMinutes);
+    if (typeof body.motd === 'string') patch.motd = body.motd.slice(0, 500);
+    store.log({ t: 'settings.set', settings: patch });
+    store.audit(store.state.admin?.username || 'admin', 'settings.update', Object.keys(patch).join(', '));
+    return { ok: true, settings: store.state.settings };
+  });
+
+  route('POST', '/api/admin/password', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 4096);
+    const current = String(body.current || '');
+    const next = String(body.next || '');
+    const admin = store.state.admin;
+    if (!verifySecret(current, admin.passHash)) throw new HttpError(401, '当前密码错误', 'BAD_CREDENTIALS');
+    if (next.length < 8 || next.length > 128) throw new HttpError(400, '新密码长度需为 8-128 位', 'BAD_PASSWORD');
+    store.log({ t: 'admin.set', admin: { ...admin, passHash: hashSecret(next) } });
+    ctx.sessions.deleteKind('admin');
+    store.audit(admin.username, 'admin.password', '修改管理员密码');
+    return { ok: true, reauth: true };
+  });
+
+  // ---- 审计 / 系统 ----
+  route('GET', '/api/admin/audit', async (req) => {
+    requireAdmin(req);
+    const url = new URL(req.url, 'http://x');
+    const limit = clampInt(url.searchParams.get('limit'), 1, 1000, 200);
+    return { ok: true, items: store.state.audit.slice(-limit).reverse() };
+  });
+
+  route('GET', '/api/admin/system', async (req) => {
+    requireAdmin(req);
+    return { ok: true, system: systemInfo(), telegram: pool.stats(), totals: store.totals() };
+  });
+
+  route('POST', '/api/admin/compact', async (req) => {
+    requireAdmin(req);
+    await store.compact();
+    return { ok: true };
+  });
+}

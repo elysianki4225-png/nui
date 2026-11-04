@@ -1,0 +1,15 @@
+# 依赖与构建临时
+node_modules/
+.asset-tmp/
+*.tgz
+
+# 运行时数据（绝不应提交）
+.demo-data/
+data/
+*.log
+snapshot.json
+events.jsonl
+
+# 系统
+.DS_Store
+Thumbs.db

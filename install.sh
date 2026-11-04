@@ -1,0 +1,571 @@
+#!/usr/bin/env bash
+# ============================================================
+#  备忘录 (nui-memo) 一键部署脚本
+#  支持: Debian 11 / 12 / 13, Ubuntu 22.04 / 24.04 / 26.04 (amd64 / arm64)
+#  特性: 自动检测 IP · 自动申请 HTTPS 证书 · 域名或 nip.io 自动分配
+#        管理员界面 + 用户界面 · Telegram 加密存储 · systemd 守护
+#
+#  用法:
+#    bash install.sh                 # 交互式（可输入域名，回车自动分配）
+#    bash install.sh --domain m.example.com
+#    bash install.sh --auto          # 全自动，使用 nip.io
+#    bash install.sh --update        # 升级程序（保留数据）
+#    bash install.sh --uninstall     # 卸载（可选保留数据）
+#
+#  一键远程安装:
+#    curl -fsSL https://raw.githubusercontent.com/elysianki4225-png/nui/main/install.sh | bash
+# ============================================================
+set -euo pipefail
+
+# ---------- 常量 ----------
+NODE_VERSION="v22.15.0"
+CADDY_VERSION="2.9.1"
+REPO="elysianki4225-png/nui"
+REPO_BRANCH="main"
+APP_DIR="/opt/nui-memo"
+DATA_DIR="/var/lib/nui-memo"
+CONF_DIR="/etc/nui-memo"
+CONF_FILE="$CONF_DIR/config.json"
+CADDY_BIN="/usr/local/bin/caddy"
+CADDY_DIR="/etc/caddy"
+CADDY_FILE="$CADDY_DIR/Caddyfile"
+BACKEND_PORT="8787"
+SERVICE="nui-memo"
+
+# ---------- 输出 ----------
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_CYAN=$'\033[36m'
+else
+  C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_CYAN=""
+fi
+info()  { echo "${C_BLUE}[INFO]${C_RESET} $*"; }
+ok()    { echo "${C_GREEN}[ OK ]${C_RESET} $*"; }
+warn()  { echo "${C_YELLOW}[WARN]${C_RESET} $*"; }
+err()   { echo "${C_RED}[FAIL]${C_RESET} $*" >&2; }
+die()   { err "$*"; exit 1; }
+step()  { echo; echo "${C_BOLD}${C_CYAN}==> $*${C_RESET}"; }
+
+# ---------- 参数 ----------
+DOMAIN=""
+AUTO=0
+DO_UPDATE=0
+DO_UNINSTALL=0
+NO_FIREWALL=0
+KEEP_DATA=0
+ASSUME_YES=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --domain) DOMAIN="${2:-}"; shift 2;;
+    --domain=*) DOMAIN="${1#*=}"; shift;;
+    --auto) AUTO=1; shift;;
+    --update) DO_UPDATE=1; shift;;
+    --uninstall) DO_UNINSTALL=1; shift;;
+    --no-firewall) NO_FIREWALL=1; shift;;
+    --keep-data) KEEP_DATA=1; shift;;
+    -y|--yes) ASSUME_YES=1; shift;;
+    -h|--help)
+      cat <<'USAGE'
+备忘录 (nui-memo) 一键部署脚本
+用法:
+  bash install.sh                 交互式（可输入域名，回车自动分配 nip.io）
+  bash install.sh --domain m.example.com   使用自定义域名
+  bash install.sh --auto          全自动，使用 nip.io 域名
+  bash install.sh --update        升级程序（保留数据）
+  bash install.sh --uninstall     卸载
+选项:
+  --no-firewall   不自动配置 ufw
+  --keep-data     卸载时保留数据
+  -y, --yes       跳过确认
+远程一键安装:
+  curl -fsSL https://raw.githubusercontent.com/elysianki4225-png/nui/main/install.sh | bash
+USAGE
+      exit 0;;
+    *) warn "未知参数: $1"; shift;;
+  esac
+done
+
+# ---------- 基础检查 ----------
+[[ $EUID -eq 0 ]] || die "请以 root 运行：sudo bash install.sh"
+
+detect_os() {
+  [[ -r /etc/os-release ]] || die "无法识别系统（缺少 /etc/os-release）"
+  . /etc/os-release
+  OS_ID="${ID:-}"
+  OS_VER="${VERSION_ID:-}"
+  OS_NAME="${PRETTY_NAME:-$OS_ID}"
+  case "$OS_ID" in
+    debian)
+      case "${OS_VER%%.*}" in
+        11|12|13) : ;;
+        *) warn "未在 Debian ${OS_VER} 上充分测试，将继续尝试。";;
+      esac;;
+    ubuntu)
+      case "$OS_VER" in
+        22.04|24.04|26.04) : ;;
+        *) warn "未在 Ubuntu ${OS_VER} 上充分测试，将继续尝试。";;
+      esac;;
+    *)
+      warn "非 Debian/Ubuntu 系统（$OS_NAME），脚本面向 Debian/Ubuntu，可能失败。"
+      [[ $ASSUME_YES -eq 1 ]] || read -r -p "仍要继续吗？[y/N] " ans </dev/tty || true
+      [[ "${ans:-}" =~ ^[Yy] ]] || die "已取消"
+      ;;
+  esac
+  command -v apt-get >/dev/null || die "需要 apt-get（Debian/Ubuntu）"
+  ok "系统: $OS_NAME"
+}
+
+detect_arch() {
+  local m; m="$(uname -m)"
+  case "$m" in
+    x86_64|amd64) ARCH="amd64"; NODE_ARCH="x64";;
+    aarch64|arm64) ARCH="arm64"; NODE_ARCH="arm64";;
+    armv7l) ARCH="armv7"; NODE_ARCH="armv7l";;
+    *) die "不支持的架构: $m";;
+  esac
+  ok "架构: $ARCH"
+}
+
+# ---------- 依赖 ----------
+install_deps() {
+  step "安装基础依赖"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y -qq || warn "apt-get update 失败，继续尝试"
+  apt-get install -y -qq curl ca-certificates tar xz-utils openssl gettext-base >/dev/null
+  ok "依赖就绪"
+}
+
+# ---------- Node.js ----------
+install_node() {
+  step "安装 Node.js ${NODE_VERSION}"
+  if [[ -x "$APP_DIR/node/bin/node" ]] && "$APP_DIR/node/bin/node" -v 2>/dev/null | grep -q "$NODE_VERSION"; then
+    ok "Node.js 已存在: $("$APP_DIR/node/bin/node" -v)"
+    return
+  fi
+  local file="node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+  local tmp; tmp="$(mktemp -d)"
+  local urls=(
+    "https://nodejs.org/dist/${NODE_VERSION}/${file}"
+    "https://npmmirror.com/mirrors/node/${NODE_VERSION}/${file}"
+    "https://cdn.npmmirror.com/binaries/node/${NODE_VERSION}/${file}"
+  )
+  local got=0
+  for u in "${urls[@]}"; do
+    info "下载 $u"
+    if curl -fL --retry 2 --connect-timeout 15 --max-time 300 -o "$tmp/node.tar.xz" "$u"; then got=1; break; fi
+    warn "该源失败，尝试下一个"
+  done
+  [[ $got -eq 1 ]] || die "Node.js 下载失败，请检查网络"
+  mkdir -p "$APP_DIR/node"
+  tar -xJf "$tmp/node.tar.xz" -C "$APP_DIR/node" --strip-components=1
+  rm -rf "$tmp"
+  "$APP_DIR/node/bin/node" -v >/dev/null || die "Node.js 安装校验失败"
+  ok "Node.js $("$APP_DIR/node/bin/node" -v) 已安装"
+}
+
+# ---------- Caddy ----------
+install_caddy() {
+  step "安装 Caddy ${CADDY_VERSION}（自动 HTTPS）"
+  if [[ -x "$CADDY_BIN" ]] && "$CADDY_BIN" version 2>/dev/null | grep -q "v${CADDY_VERSION}"; then
+    ok "Caddy 已存在"
+  else
+    local file="caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
+    local tmp; tmp="$(mktemp -d)"
+    local base="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/${file}"
+    local urls=("$base" "https://gh-proxy.com/${base}" "https://ghproxy.net/${base}")
+    local got=0
+    for u in "${urls[@]}"; do
+      info "下载 $u"
+      if curl -fL --retry 2 --connect-timeout 15 --max-time 300 -o "$tmp/caddy.tar.gz" "$u"; then got=1; break; fi
+      warn "该源失败，尝试下一个"
+    done
+    [[ $got -eq 1 ]] || die "Caddy 下载失败，请检查网络（中国大陆可设置代理后重试）"
+    tar -xzf "$tmp/caddy.tar.gz" -C "$tmp" caddy
+    install -m 0755 "$tmp/caddy" "$CADDY_BIN"
+    rm -rf "$tmp"
+    ok "Caddy $("$CADDY_BIN" version | head -1) 已安装"
+  fi
+  id caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy
+  mkdir -p /var/lib/caddy "$CADDY_DIR"
+  chown -R caddy:caddy /var/lib/caddy
+}
+
+# ---------- IP 检测 ----------
+detect_ip() {
+  local ip
+  for u in "https://api.ipify.org" "https://ifconfig.me/ip" "https://ip.sb" "https://api.ip.sb/ip" "https://checkip.amazonaws.com"; do
+    ip="$(curl -4 -fsS --connect-timeout 8 --max-time 12 "$u" 2>/dev/null | tr -d '[:space:]')" || true
+    if [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then PUBLIC_IP="$ip"; IP_FAMILY=4; return 0; fi
+  done
+  for u in "https://api64.ipify.org" "https://ifconfig.co/ip"; do
+    ip="$(curl -6 -fsS --connect-timeout 8 --max-time 12 "$u" 2>/dev/null | tr -d '[:space:]')" || true
+    if [[ "$ip" == *:* ]]; then PUBLIC_IP="$ip"; IP_FAMILY=6; return 0; fi
+  done
+  return 1
+}
+
+# ---------- 选择域名 ----------
+choose_domain() {
+  step "配置访问域名"
+  # 升级时复用已有配置
+  if [[ -z "$DOMAIN" && -f "$CONF_FILE" ]]; then
+    local existing_mode existing_user
+    existing_mode="$(grep -o '"mode"[^,]*' "$CONF_FILE" | head -1 | sed 's/.*: *"//;s/"//')"
+    existing_user="$(grep -o '"userHost"[^,]*' "$CONF_FILE" | head -1 | sed 's/.*: *"//;s/"//')"
+    if [[ -n "$existing_user" ]]; then
+      MODE="$existing_mode"; USER_HOST="$existing_user"
+      ADMIN_HOST="$(grep -o '"adminHost"[^,]*' "$CONF_FILE" | head -1 | sed 's/.*: *"//;s/"//')"
+      ok "复用已有域名: $USER_HOST"
+      return
+    fi
+  fi
+  if [[ -n "$DOMAIN" ]]; then
+    MODE="domain"; USER_HOST="$DOMAIN"; ADMIN_HOST=""
+    info "使用自定义域名: $DOMAIN"
+    check_dns "$DOMAIN"
+    return
+  fi
+  if [[ $AUTO -eq 0 && -e /dev/tty ]]; then
+    echo "  检测到本机公网 IP: ${C_BOLD}${PUBLIC_IP}${C_RESET}"
+    echo "  你可以输入自己的域名（需已解析到本机），或直接回车由系统自动分配 nip.io 域名。"
+    local input=""
+    if read -r -t 40 -p "  请输入域名（回车自动分配）: " input </dev/tty; then
+      DOMAIN="$(echo "$input" | tr -d '[:space:]')"
+    fi
+    echo
+  fi
+  if [[ -n "$DOMAIN" ]]; then
+    MODE="domain"; USER_HOST="$DOMAIN"; ADMIN_HOST=""
+    check_dns "$DOMAIN"
+  else
+    MODE="ip"
+    local prefix; prefix="$(openssl rand -hex 3)"
+    local iphost="$PUBLIC_IP"
+    if [[ "$IP_FAMILY" == "6" ]]; then iphost="${PUBLIC_IP//:/-}"; fi
+    USER_HOST="memo-${prefix}.${iphost}.nip.io"
+    ADMIN_HOST="admin-${prefix}.${iphost}.nip.io"
+    info "自动分配 nip.io 域名:"
+    info "  用户: $USER_HOST"
+    info "  管理: $ADMIN_HOST"
+  fi
+}
+
+check_dns() {
+  local d="$1" resolved=""
+  resolved="$(getent ahosts "$d" 2>/dev/null | awk '{print $1; exit}')" || true
+  if [[ -z "$resolved" ]]; then
+    warn "域名 $d 目前无法解析。请先将其 A/AAAA 记录指向 $PUBLIC_IP，否则证书申请会失败。"
+  elif [[ "$resolved" != "$PUBLIC_IP" ]]; then
+    warn "域名 $d 解析到 $resolved，与本机 IP $PUBLIC_IP 不一致，证书可能申请失败。"
+  else
+    ok "域名解析正确 ($resolved)"
+  fi
+}
+
+# ---------- 获取程序 ----------
+fetch_app() {
+  step "部署程序文件"
+  local src=""
+  local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || true
+  if [[ -n "$script_dir" && -f "$script_dir/server/index.js" && -d "$script_dir/web" ]]; then
+    src="$script_dir"
+    info "使用本地仓库文件: $src"
+  else
+    local tmp; tmp="$(mktemp -d)"
+    local url="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${REPO_BRANCH}"
+    info "下载程序: $url"
+    curl -fL --retry 2 --connect-timeout 15 --max-time 300 -o "$tmp/app.tar.gz" "$url" || die "程序下载失败"
+    tar -xzf "$tmp/app.tar.gz" -C "$tmp"
+    src="$(find "$tmp" -maxdepth 1 -type d -name 'nui-*' | head -1)"
+    [[ -n "$src" && -f "$src/server/index.js" ]] || die "程序包结构异常"
+    FETCH_TMP="$tmp"
+  fi
+  mkdir -p "$APP_DIR"
+  # 备份旧程序（升级）
+  if [[ -d "$APP_DIR/server" ]]; then
+    rm -rf "$APP_DIR/server.old" "$APP_DIR/web.old"
+    mv "$APP_DIR/server" "$APP_DIR/server.old" 2>/dev/null || true
+    mv "$APP_DIR/web" "$APP_DIR/web.old" 2>/dev/null || true
+  fi
+  cp -r "$src/server" "$APP_DIR/server"
+  cp -r "$src/web" "$APP_DIR/web"
+  rm -rf "$APP_DIR/server.old" "$APP_DIR/web.old"
+  [[ -n "${FETCH_TMP:-}" ]] && rm -rf "$FETCH_TMP"
+  ok "程序已部署到 $APP_DIR"
+}
+
+# ---------- 配置 ----------
+write_config() {
+  step "写入配置"
+  mkdir -p "$CONF_DIR" "$DATA_DIR"
+  if [[ ! -f "$CONF_FILE" ]]; then
+    cat > "$CONF_FILE" <<EOF
+{
+  "host": "127.0.0.1",
+  "port": ${BACKEND_PORT},
+  "dataDir": "${DATA_DIR}",
+  "mode": "${MODE}",
+  "userHost": "${USER_HOST}",
+  "adminHost": "${ADMIN_HOST}",
+  "trustProxy": true,
+  "telegramApiBase": "https://api.telegram.org",
+  "maxFileSize": 134217728,
+  "chunkSize": 16777216,
+  "thumbCacheMB": 64,
+  "uploadConcurrency": 3,
+  "uploadQueueMB": 96
+}
+EOF
+    chmod 640 "$CONF_FILE"
+    ok "配置已创建: $CONF_FILE"
+  else
+    # 更新域名相关字段（保留其余）
+    local tmp; tmp="$(mktemp)"
+    MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" \
+    "$APP_DIR/node/bin/node" -e '
+      const fs=require("fs");const f=process.argv[1];
+      const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST;
+      fs.writeFileSync(f,JSON.stringify(c,null,2));
+    ' "$CONF_FILE"
+    ok "配置已更新（保留数据与机器人绑定）"
+  fi
+  id nui-memo >/dev/null 2>&1 || useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin nui-memo
+  chown -R nui-memo:nui-memo "$DATA_DIR"
+  chmod 750 "$DATA_DIR"
+  chgrp nui-memo "$CONF_FILE" 2>/dev/null || true
+}
+
+# ---------- Caddyfile ----------
+write_caddyfile() {
+  step "配置 Caddy 反向代理（自动证书）"
+  {
+    echo "# 由 nui-memo 安装脚本生成"
+    echo "{"
+    echo "    admin off"
+    echo "}"
+    if [[ "$MODE" == "ip" ]]; then
+      for host in "$USER_HOST" "$ADMIN_HOST"; do
+        cat <<EOF
+
+${host} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:${BACKEND_PORT}
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+}
+EOF
+      done
+    else
+      cat <<EOF
+
+${USER_HOST} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:${BACKEND_PORT}
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+}
+EOF
+    fi
+  } > "$CADDY_FILE"
+  chmod 644 "$CADDY_FILE"
+  "$CADDY_BIN" validate --config "$CADDY_FILE" >/dev/null 2>&1 && ok "Caddyfile 校验通过" || warn "Caddyfile 校验未通过，请检查"
+}
+
+# ---------- systemd ----------
+write_systemd() {
+  step "配置 systemd 服务"
+  cat > /etc/systemd/system/${SERVICE}.service <<EOF
+[Unit]
+Description=nui-memo (备忘录)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nui-memo
+Group=nui-memo
+WorkingDirectory=${APP_DIR}/server
+Environment=MEMO_CONFIG=${CONF_FILE}
+ExecStart=${APP_DIR}/node/bin/node ${APP_DIR}/server/index.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=${DATA_DIR}
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryHigh=512M
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > /etc/systemd/system/caddy.service <<EOF
+[Unit]
+Description=Caddy web server
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+Environment=XDG_DATA_HOME=/var/lib/caddy
+ExecStart=${CADDY_BIN} run --environ --config ${CADDY_FILE}
+ExecReload=${CADDY_BIN} reload --config ${CADDY_FILE} --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  ok "systemd 服务已配置"
+}
+
+# ---------- 防火墙 ----------
+setup_firewall() {
+  [[ $NO_FIREWALL -eq 1 ]] && { info "跳过防火墙配置"; return; }
+  if command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+      step "配置防火墙 (ufw)"
+      ufw allow 80/tcp >/dev/null 2>&1 || true
+      ufw allow 443/tcp >/dev/null 2>&1 || true
+      ok "已放行 80/443"
+    fi
+  fi
+}
+
+# ---------- 启动 ----------
+start_services() {
+  step "启动服务"
+  systemctl enable ${SERVICE} >/dev/null 2>&1 || true
+  systemctl restart ${SERVICE}
+  systemctl enable caddy >/dev/null 2>&1 || true
+  systemctl restart caddy
+  sleep 2
+  systemctl is-active --quiet ${SERVICE} || { journalctl -u ${SERVICE} -n 30 --no-pager; die "后端启动失败"; }
+  ok "后端运行中"
+  systemctl is-active --quiet caddy && ok "Caddy 运行中" || warn "Caddy 未运行，请检查 journalctl -u caddy"
+}
+
+health_check() {
+  step "健康检查"
+  local i
+  for i in $(seq 1 15); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null 2>&1; then
+      ok "后端 API 正常"
+      return
+    fi
+    sleep 1
+  done
+  warn "后端健康检查超时，请查看日志: journalctl -u ${SERVICE} -f"
+}
+
+# ---------- 总结 ----------
+print_summary() {
+  local user_url admin_url
+  if [[ "$MODE" == "ip" ]]; then
+    user_url="https://${USER_HOST}"
+    admin_url="https://${ADMIN_HOST}"
+  else
+    user_url="https://${USER_HOST}"
+    admin_url="https://${USER_HOST}/admin/"
+  fi
+  echo
+  echo "${C_BOLD}${C_GREEN}============================================================${C_RESET}"
+  echo "${C_BOLD}  备忘录 部署完成${C_RESET}"
+  echo "${C_BOLD}${C_GREEN}============================================================${C_RESET}"
+  echo "  用户界面:  ${C_CYAN}${user_url}${C_RESET}"
+  echo "  管理界面:  ${C_CYAN}${admin_url}${C_RESET}"
+  echo
+  echo "  下一步:"
+  echo "   1. 打开管理界面，首次进入设置管理员账号密码"
+  echo "   2. 在「机器人」页绑定你的 Telegram Bot Token 与 Chat ID"
+  echo "      (先向机器人发一条消息，再点「自动检测」获取 Chat ID)"
+  echo "   3. 打开用户界面注册数字账号，妥善保存密钥，开始使用"
+  echo
+  echo "  常用命令:"
+  echo "   查看状态:  systemctl status ${SERVICE} caddy"
+  echo "   查看日志:  journalctl -u ${SERVICE} -f"
+  echo "   升级程序:  bash install.sh --update"
+  echo "   卸载:      bash install.sh --uninstall"
+  echo
+  if [[ "$MODE" == "ip" ]]; then
+    echo "  ${C_DIM}提示: nip.io 域名证书由 Let's Encrypt 自动签发与续期。${C_RESET}"
+    echo "  ${C_DIM}若证书签发稍慢，请稍候 1-2 分钟后刷新。${C_RESET}"
+  else
+    echo "  ${C_DIM}提示: 请确保域名已解析到本机，证书将自动签发与续期。${C_RESET}"
+  fi
+  echo "${C_BOLD}${C_GREEN}============================================================${C_RESET}"
+}
+
+# ---------- 卸载 ----------
+uninstall() {
+  step "卸载 备忘录"
+  systemctl stop ${SERVICE} caddy 2>/dev/null || true
+  systemctl disable ${SERVICE} caddy 2>/dev/null || true
+  rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service
+  systemctl daemon-reload
+  rm -rf "$APP_DIR" "$CONF_DIR" "$CADDY_FILE"
+  if [[ $KEEP_DATA -eq 1 ]]; then
+    info "保留数据目录: $DATA_DIR"
+  else
+    if [[ $ASSUME_YES -eq 0 && -e /dev/tty ]]; then
+      read -r -p "是否同时删除所有数据（账号/封禁/机器人绑定）？[y/N] " ans </dev/tty || true
+      [[ "${ans:-}" =~ ^[Yy] ]] && KEEP_DATA=0 || KEEP_DATA=1
+    fi
+    if [[ $KEEP_DATA -eq 0 ]]; then rm -rf "$DATA_DIR"; ok "数据已删除"; else info "保留数据: $DATA_DIR"; fi
+  fi
+  ok "卸载完成（Caddy 二进制保留在 $CADDY_BIN）"
+  exit 0
+}
+
+# ---------- 主流程 ----------
+main() {
+  echo "${C_BOLD}"
+  echo "  备忘录 (nui-memo) 一键部署"
+  echo "  端到端加密 · Telegram 存储 · 自动 HTTPS"
+  echo "${C_RESET}"
+  [[ $DO_UNINSTALL -eq 1 ]] && uninstall
+  detect_os
+  detect_arch
+  install_deps
+  install_node
+  install_caddy
+  if ! detect_ip; then
+    die "无法检测公网 IP，请检查网络后重试"
+  fi
+  ok "公网 IP: $PUBLIC_IP (IPv$IP_FAMILY)"
+  choose_domain
+  fetch_app
+  write_config
+  write_caddyfile
+  write_systemd
+  setup_firewall
+  start_services
+  health_check
+  print_summary
+}
+
+main "$@"
