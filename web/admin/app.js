@@ -98,12 +98,14 @@ const PAGES = [
 ];
 
 function renderMain() {
-  const shell = h('div', { class: 'shell' });
+  const shell = h('div', { class: 'shell shell-admin' });
+  // 桌面：高密度导航 rail
   const rail = h('nav', { class: 'nav-rail' });
   rail.append(h('div', { style: { marginBottom: '8px', color: 'var(--md-primary)' }, title: '管理控制台' }, icon('admin_panel_settings', 'lg')));
   for (const p of PAGES) rail.append(h('button', { class: `nav-rail-item stateful ${S.page === p.id ? 'active' : ''}`, onClick: () => goPage(p.id) }, h('span', { class: 'nav-indicator' }, icon(p.icon)), h('span', {}, p.label)));
   const main = h('div', { class: 'main' });
   const topbar = h('header', { class: 'top-bar' },
+    h('button', { class: 'icon-btn stateful nav-toggle', title: '打开菜单', 'aria-label': '打开菜单', onClick: () => openDrawer() }, icon('menu')),
     h('div', { class: 'top-bar-title' }, icon('admin_panel_settings'), h('span', {}, '管理控制台')),
     h('button', { class: 'icon-btn stateful', title: '切换主题', onClick: () => toggleTheme() }, icon(currentTheme() === 'dark' ? 'light_mode' : 'dark_mode')),
     h('button', { class: 'icon-btn stateful', title: '管理员', onClick: (e) => openMenu(e.currentTarget, [
@@ -116,11 +118,31 @@ function renderMain() {
     ]) }, icon('account_circle')));
   const content = h('div', { class: 'content' });
   main.append(topbar, content);
-  const navbar = h('nav', { class: 'nav-bar' });
-  for (const p of PAGES) navbar.append(h('button', { class: `nav-bar-item stateful ${S.page === p.id ? 'active' : ''}`, onClick: () => goPage(p.id) }, h('span', { class: 'nav-indicator' }, icon(p.icon)), h('span', {}, p.label)));
-  shell.append(rail, main, navbar);
+  shell.append(rail, main);
   $app.append(shell);
-  S.el = { content, rail, navbar };
+
+  // 移动：汉堡 + M3 侧边抽屉（项多不溢出）
+  const drawerItems = [];
+  const drawer = h('nav', { class: 'nav-drawer', 'aria-label': '管理导航' },
+    h('div', { class: 'drawer-head' },
+      h('div', { class: 'drawer-logo' }, icon('admin_panel_settings')),
+      h('div', { class: 'title' }, '管理控制台'),
+      h('button', { class: 'icon-btn stateful', title: '关闭菜单', onClick: () => closeDrawer() }, icon('close'))),
+    h('div', { class: 'drawer-section' }, '管理'));
+  for (const p of PAGES) {
+    const item = h('button', { class: `nav-drawer-item stateful ${S.page === p.id ? 'active' : ''}`, onClick: () => { goPage(p.id); closeDrawer(); } }, icon(p.icon), h('span', {}, p.label));
+    drawerItems.push(item); drawer.append(item);
+  }
+  drawer.append(h('div', { class: 'drawer-divider' }), h('div', { class: 'drawer-section' }, '账户'));
+  drawer.append(h('div', { class: 'drawer-foot' },
+    h('button', { class: 'nav-drawer-item stateful', onClick: () => { closeDrawer(); changePassword(); } }, icon('password'), h('span', {}, '修改密码')),
+    h('button', { class: 'nav-drawer-item stateful', onClick: () => { toggleTheme(); } }, icon(currentTheme() === 'dark' ? 'light_mode' : 'dark_mode'), h('span', {}, '切换主题')),
+    h('button', { class: 'nav-drawer-item danger stateful', onClick: () => { closeDrawer(); adminLogout(); } }, icon('logout'), h('span', {}, '退出登录'))));
+  const scrim = h('div', { class: 'drawer-scrim', onClick: (e) => { if (e.target === scrim) closeDrawer(); } }, drawer);
+  $app.append(scrim);
+  function openDrawer() { scrim.classList.add('show'); }
+  function closeDrawer() { scrim.classList.remove('show'); }
+  S.el = { content, rail, drawerItems, scrim, openDrawer, closeDrawer };
   renderPage();
 }
 
@@ -128,7 +150,7 @@ function goPage(page) {
   S.page = page;
   const idx = PAGES.findIndex((p) => p.id === page);
   [...S.el.rail.querySelectorAll('.nav-rail-item')].forEach((el, i) => el.classList.toggle('active', i === idx));
-  [...S.el.navbar.querySelectorAll('.nav-bar-item')].forEach((el, i) => el.classList.toggle('active', i === idx));
+  (S.el.drawerItems || []).forEach((el, i) => el.classList.toggle('active', i === idx));
   renderPage();
 }
 

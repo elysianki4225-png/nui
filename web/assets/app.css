@@ -225,3 +225,68 @@
 /* 视图切换动画 */
 .view-enter { animation: view-in var(--md-dur-3) var(--md-ease-decel); }
 @keyframes view-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ============================================================
+   响应式导航：桌面 = 高密度 rail + 表格；移动 = 汉堡 + 侧边抽屉
+   ============================================================ */
+.nav-toggle { display: none; }
+@media (max-width: 839px) { .nav-toggle { display: inline-flex; } }
+
+/* 移动端不使用底部导航（项多会溢出），改用侧边抽屉 */
+.shell-admin .nav-bar, .shell-user .nav-bar { display: none !important; }
+/* 用户端去掉底部导航后，FAB 回落到右下角 */
+@media (max-width: 839px) { .shell-user .fab-main { bottom: 24px; right: 16px; } }
+
+/* M3 模态导航抽屉（移动端侧边栏） */
+.drawer-scrim { position: fixed; inset: 0; background: var(--md-scrim); z-index: 900; opacity: 0; pointer-events: none; transition: opacity var(--md-dur-3) var(--md-ease); }
+.drawer-scrim.show { opacity: 1; pointer-events: auto; }
+.nav-drawer {
+  position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 86vw); z-index: 901;
+  background: var(--md-surface-container-low); color: var(--md-on-surface);
+  border-radius: 0 var(--md-shape-lg) var(--md-shape-lg) 0; box-shadow: var(--md-elev-3);
+  transform: translateX(-105%); transition: transform var(--md-dur-3) var(--md-ease);
+  display: flex; flex-direction: column; padding: 12px; overflow-y: auto; overscroll-behavior: contain;
+}
+.drawer-scrim.show .nav-drawer { transform: none; }
+.drawer-head { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: 8px; }
+.drawer-head .drawer-logo { width: 40px; height: 40px; border-radius: 12px; background: var(--md-primary); color: var(--md-on-primary); display: flex; align-items: center; justify-content: center; flex: none; }
+.drawer-head .title { flex: 1; min-width: 0; font-size: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-section { font-size: 12px; font-weight: 500; color: var(--md-on-surface-variant); padding: 10px 16px 4px; letter-spacing: .4px; }
+.drawer-divider { height: 1px; background: var(--md-outline-variant); margin: 8px 4px; }
+.nav-drawer-item {
+  display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 0 16px; width: 100%;
+  border: none; background: none; border-radius: var(--md-shape-full); cursor: pointer; text-align: left;
+  color: var(--md-on-surface-variant); font-size: 14px; font-weight: 500;
+  transition: background-color var(--md-dur-2) var(--md-ease);
+}
+.nav-drawer-item .icon { width: 24px; height: 24px; }
+.nav-drawer-item.active { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.nav-drawer-item.danger { color: var(--md-error); }
+.drawer-foot { margin-top: auto; padding-top: 8px; }
+
+/* 移动端整体收紧，避免横向溢出 */
+@media (max-width: 600px) {
+  .auth-wrap { padding: 16px; }
+  .auth-card { padding: 24px 20px; }
+  .auth-logo h1 { font-size: 22px; }
+  .key-reveal .key-value { font-size: 14px; letter-spacing: .3px; }
+  .admin-content { padding: 12px; }
+  .admin-page-head { gap: 8px; margin-bottom: 16px; }
+  .admin-page-head h2 { font-size: 22px; }
+  .panel { padding: 16px; }
+  .top-bar { padding: 0 8px; height: 56px; }
+  .top-bar-title { font-size: 18px; }
+  .memo-list-pad { padding: 0 4px 96px; }
+}
+
+/* 分段按钮在窄屏横向滚动，绝不撑破布局 */
+.segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.segmented::-webkit-scrollbar { display: none; }
+.segmented button { white-space: nowrap; flex: none; }
+
+/* 桌面高密度：表格更紧凑 */
+@media (min-width: 840px) {
+  .md-table th { padding: 10px 14px; }
+  .md-table td { padding: 8px 14px; }
+  .admin-content { padding: 20px 24px; }
+}
