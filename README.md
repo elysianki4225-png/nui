@@ -66,6 +66,11 @@ sudo bash install.sh --auto                   # 全自动，使用 nip.io
 sudo bash install.sh --update                 # 升级程序（保留数据与绑定）
 sudo bash install.sh --uninstall              # 卸载
 sudo bash install.sh --uninstall --keep-data  # 卸载但保留数据
+
+# Cloudflare 小黄云（详见下文）
+sudo bash install.sh --domain m.example.com --cloudflare \
+     --cf-cert origin.pem --cf-key origin.key \
+     --cf-http-port 80 --cf-https-port 443
 ```
 
 安装完成后会打印**用户界面**与**管理界面**两个 HTTPS 网址。
@@ -104,6 +109,43 @@ sudo bash install.sh --uninstall --keep-data  # 卸载但保留数据
 - 自定义域名需先把 A/AAAA 记录解析到 VPS，脚本会校验解析是否正确。
 - nip.io 模式两个子域名各自独立证书，全自动签发与续期。
 - nip.io 为免费共享域名，受 Let's Encrypt 速率限制，**长期使用建议绑定自己的域名**（`--update --domain your.domain`）。
+
+---
+
+## Cloudflare 小黄云（CDN 代理）
+
+自定义域名可以套 Cloudflare 橙色云代理。脚本提供 `--cloudflare` 模式，**同时兼容 Flexible 与 Full/Strict 两种 SSL 模式，并支持自定义回源端口**：
+
+```bash
+# 方式 A：手动提供 Origin CA 证书（推荐，Strict 最稳）
+# 先在 CF 控制台 SSL/TLS -> Origin Server -> Create Certificate 下载 cert/key
+sudo bash install.sh --domain m.example.com --cloudflare \
+     --cf-cert /path/origin.pem --cf-key /path/origin.key
+
+# 方式 B：用 API Token 自动签发 Origin CA 证书（需 SSL and Certificates 权限）
+sudo bash install.sh --domain m.example.com --cloudflare --cf-api-token <CF_API_TOKEN>
+
+# 自定义回源端口（例如 CF Origin Rule 把回源指到 8443 / 8080）
+sudo bash install.sh --domain m.example.com --cloudflare \
+     --cf-cert origin.pem --cf-key origin.key \
+     --cf-https-port 8443 --cf-http-port 8080
+
+# 仅允许 Cloudflare IP 回源，防止绕过 CDN 直连源站
+sudo bash install.sh --domain m.example.com --cloudflare --cf-only ...
+```
+
+工作原理与 CF 侧设置：
+
+| CF SSL 模式 | 回源协议/端口 | 需要的证书 | 说明 |
+|---|---|---|---|
+| Flexible | HTTP `--cf-http-port`（默认 80） | 不需要 | 源站**不强制跳转 HTTPS**，避免重定向循环 |
+| Full / Strict | HTTPS `--cf-https-port`（默认 443） | Origin CA 证书 | Strict 会校验证书主机名，Origin CA 证书受 CF 信任 |
+
+- 脚本在 CF 模式下关闭 Caddy 自动 HTTPS 与强制跳转，改为按端口分别监听 HTTP/HTTPS 回源；HSTS 交给 CF 边缘下发。
+- 后端优先读取 `CF-Connecting-IP` 作为真实访客 IP（用于限流与 IP 封禁），Flexible 回源（HTTP）下仍会下发 `Secure` Cookie。
+- 若回源端口不是 80/443，请在 CF「Rules → Origin Rules」把 **Destination Port** 设为对应端口（或使用 CF 支持的端口）。
+- 建议关闭 Rocket Loader；升级时 CF 配置会自动复用，也可用 `--no-cloudflare` 改回直连。
+- 未提供证书时仅启用 Flexible（HTTP 回源）；补上 `--cf-cert/--cf-key` 重新运行即可启用 Full/Strict。
 
 ---
 
@@ -157,6 +199,12 @@ sudo bash install.sh --update        # 升级
 
 ## 常见问题
 
+**管理界面打开是空白？**
+v1.0.1 已修复管理端脚本的一处语法错误。请升级到最新版（`bash install.sh --update`）并强制刷新浏览器（Ctrl+F5 / 清缓存）。若仍空白，打开浏览器控制台查看报错，并确认 `/admin/app.js` 能正常返回 200。
+
+**套了 Cloudflare 小黄云后打不开 / 重定向循环？**
+使用 `--cloudflare` 模式部署。Flexible 必须走 HTTP 回源端口且源站不强制跳转（脚本已处理）；Full/Strict 需要 Origin CA 证书并走 HTTPS 回源端口。详见上文 Cloudflare 章节。
+
 **国内用户图片打不开？**
 图片/视频均经你的 VPS 中转（`/api/user/memos/:id/...`），浏览器不直连 `t.me`，只要 VPS 能访问 Telegram 即可正常预览。
 
@@ -179,8 +227,17 @@ sudo bash install.sh --update        # 升级
 零依赖后端（Node.js ≥ 20），前端为原生 ES 模块 + 本地化 M3 设计系统。
 
 ```bash
+# 前端/后端 ESM 语法门禁（防止白屏类语法错误）
+node --experimental-vm-modules test/frontend-check.mjs
+
 # 端到端冒烟测试（内置 Telegram 模拟器）
 node test/smoke.mjs
+
+# Cloudflare 后端行为测试（真实 IP / Secure Cookie / HSTS / 封禁）
+node test/cloudflare.mjs
+
+# 一键脚本生成的配置 / Caddyfile 测试（含 CF 模式，无需 root）
+bash test/install-cf.sh
 
 # 启动演示（模拟存储）
 node test/mock-telegram.mjs 9099 &

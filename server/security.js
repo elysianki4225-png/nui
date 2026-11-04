@@ -268,10 +268,16 @@ export class IpBanList {
 export function clientIp(req, cfg) {
   let ip = req.socket.remoteAddress || '';
   if (cfg.trustProxy) {
-    const xff = req.headers['x-forwarded-for'];
-    if (typeof xff === 'string' && xff.length) {
-      const first = xff.split(',')[0].trim();
-      if (normalizeIp(first)) ip = first;
+    // Cloudflare 真实访客 IP（优先于 XFF，避免取到边缘节点 IP）
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (typeof cfIp === 'string' && normalizeIp(cfIp.trim())) {
+      ip = cfIp.trim();
+    } else {
+      const xff = req.headers['x-forwarded-for'];
+      if (typeof xff === 'string' && xff.length) {
+        const first = xff.split(',')[0].trim();
+        if (normalizeIp(first)) ip = first;
+      }
     }
   }
   return normalizeIp(ip) || '0.0.0.0';

@@ -41,7 +41,7 @@ function renderSetup() {
   const pass = h('input', { class: 'tf-input', placeholder: ' ', type: 'password', autocomplete: 'new-password' });
   const pass2 = h('input', { class: 'tf-input', placeholder: ' ', type: 'password', autocomplete: 'new-password' });
   const err = h('div', { class: 'md-body-s', style: { color: 'var(--md-error)', minHeight: '18px', margin: '4px 0 8px' } });
-  const btn = h('button', { class: 'btn btn-filled btn-block stateful', onClick: submit }, icon('check_circle'), '创建管理员'));
+  const btn = h('button', { class: 'btn btn-filled btn-block stateful', onClick: submit }, icon('check_circle'), '创建管理员');
   card.append(
     h('label', { class: 'tf auth-field' }, h('span', { class: 'tf-box' }, h('span', { class: 'tf-leading' }, icon('person')), user, h('span', { class: 'tf-label' }, '管理员用户名')), h('span', { class: 'tf-helper' }, '3-32 位字母、数字、_ . -')),
     h('label', { class: 'tf auth-field' }, h('span', { class: 'tf-box' }, h('span', { class: 'tf-leading' }, icon('lock')), pass, h('span', { class: 'tf-label' }, '密码')), h('span', { class: 'tf-helper' }, '至少 8 位')),
@@ -67,7 +67,7 @@ function renderLogin() {
   const user = h('input', { class: 'tf-input', placeholder: ' ', autocomplete: 'username' });
   const pass = h('input', { class: 'tf-input', placeholder: ' ', type: 'password', autocomplete: 'current-password' });
   const err = h('div', { class: 'md-body-s', style: { color: 'var(--md-error)', minHeight: '18px', margin: '4px 0 8px' } });
-  const btn = h('button', { class: 'btn btn-filled btn-block stateful', onClick: submit }, icon('login'), '登录'));
+  const btn = h('button', { class: 'btn btn-filled btn-block stateful', onClick: submit }, icon('login'), '登录');
   card.append(
     h('label', { class: 'tf auth-field' }, h('span', { class: 'tf-box' }, h('span', { class: 'tf-leading' }, icon('person')), user, h('span', { class: 'tf-label' }, '用户名'))),
     h('label', { class: 'tf auth-field' }, h('span', { class: 'tf-box' }, h('span', { class: 'tf-leading' }, icon('lock')), pass, h('span', { class: 'tf-label' }, '密码'))),

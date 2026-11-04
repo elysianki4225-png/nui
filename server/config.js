@@ -13,6 +13,8 @@ const defaults = {
   userHost: '',
   adminHost: '',
   trustProxy: true,
+  // 位于 Cloudflare 小黄云代理之后（Flexible / Full / Strict 均可）
+  cloudflare: false,
   telegramApiBase: 'https://api.telegram.org',
   maxFileSize: 128 * MB,
   chunkSize: 16 * MB,

@@ -48,7 +48,8 @@ function securityHeaders(req, res) {
   ];
   if (!cfg.dev) csp.push("frame-ancestors 'self'");
   res.setHeader('Content-Security-Policy', csp.join('; '));
-  if (isHttps(req, cfg)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // Cloudflare 模式下 HSTS 交给 CF 边缘下发，避免 Flexible 回源时的冲突
+  if (isHttps(req, cfg) && !cfg.cloudflare) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 }
 
 const server = http.createServer(async (req, res) => {

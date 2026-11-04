@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 export const MB = 1024 * 1024;
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 export function randomId(bytes = 12) {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -131,6 +131,10 @@ export function clearCookie(res, name, opts = {}) {
 export function isHttps(req, cfg) {
   if (req.socket && req.socket.encrypted) return true;
   if (cfg.trustProxy) {
+    // Cloudflare 小黄云：访客到 CF 边缘始终是 HTTPS，即便回源是 HTTP(Flexible)
+    if (cfg.cloudflare) return true;
+    const visitor = req.headers['cf-visitor'];
+    if (typeof visitor === 'string' && /"scheme"\s*:\s*"https"/.test(visitor)) return true;
     const proto = req.headers['x-forwarded-proto'];
     if (typeof proto === 'string' && proto.split(',')[0].trim() === 'https') return true;
   }
