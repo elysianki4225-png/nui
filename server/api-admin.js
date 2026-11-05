@@ -1,7 +1,19 @@
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { HttpError, readJson, nowSec, clampInt, formatBytes, randomId } from './util.js';
 import { hashSecret, verifySecret, parseIpRule } from './security.js';
 import { VERSION } from './util.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const EXPORT_TEMPLATE = path.resolve(__dirname, '..', 'web', 'export', 'template.html');
+
+function normOrigin(o) {
+  const s = String(o || '').trim();
+  if (!s) return null;
+  try { const u = new URL(s.includes('://') ? s : `https://${s}`); if (!/^https?:$/.test(u.protocol)) return null; return `${u.protocol}//${u.host}`.toLowerCase(); } catch { return null; }
+}
 
 function userDTO(u, store) {
   return {
@@ -308,6 +320,112 @@ export function registerAdminRoutes(h, ctx) {
     const id = url.searchParams.get('id') || '';
     const r = id ? ctx.domain.poll(id) : ctx.domain.readResult();
     return { ok: true, result: r || null };
+  });
+
+  // ---- 跨域 / 前端部署 ----
+  route('GET', '/api/admin/cors', async (req) => {
+    requireAdmin(req);
+    const s = store.state.settings;
+    return { ok: true, mode: s.corsMode || 'off', origins: s.corsOrigins || [], userUrl: cfg.userUrl, exportReady: fs.existsSync(EXPORT_TEMPLATE) };
+  });
+
+  route('PATCH', '/api/admin/cors', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 4096);
+    const mode = ['off', 'whitelist', 'open'].includes(body.mode) ? body.mode : 'off';
+    store.log({ t: 'settings.set', settings: { corsMode: mode } });
+    store.audit(store.state.admin?.username || 'admin', 'cors.mode', `跨域模式=${mode}`);
+    return { ok: true, mode };
+  });
+
+  route('POST', '/api/admin/cors/origins', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 256 * 1024);
+    const lines = Array.isArray(body.origins) ? body.origins : String(body.text || '').split(/[\n,;]+/);
+    const existing = new Set(store.state.settings.corsOrigins || []);
+    const added = [], errors = [];
+    for (const raw of lines.slice(0, 1000)) {
+      const o = normOrigin(raw);
+      if (!o) { if (String(raw).trim()) errors.push({ origin: raw, error: '无效 Origin' }); continue; }
+      if (existing.has(o)) { errors.push({ origin: o, error: '已存在' }); continue; }
+      existing.add(o); added.push(o);
+    }
+    store.log({ t: 'settings.set', settings: { corsOrigins: [...existing] } });
+    store.audit(store.state.admin?.username || 'admin', 'cors.add', `新增 ${added.length} 个跨域白名单`);
+    return { ok: true, added: added.length, errors, origins: [...existing] };
+  });
+
+  route('POST', '/api/admin/cors/origins/batch', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 256 * 1024);
+    const remove = new Set((Array.isArray(body.origins) ? body.origins : []).map(normOrigin).filter(Boolean));
+    const next = (store.state.settings.corsOrigins || []).filter((o) => !remove.has(o));
+    store.log({ t: 'settings.set', settings: { corsOrigins: next } });
+    store.audit(store.state.admin?.username || 'admin', 'cors.remove', `移除 ${remove.size} 个跨域白名单`);
+    return { ok: true, origins: next };
+  });
+
+  // 导出单文件用户前端（自动写入 API 地址，开箱即用）
+  route('GET', '/api/admin/export', async (req, res) => {
+    requireAdmin(req);
+    if (!fs.existsSync(EXPORT_TEMPLATE)) throw new HttpError(503, '导出模板未构建，请先运行 scripts/build-export.mjs', 'NO_TEMPLATE');
+    const url = new URL(req.url, 'http://x');
+    let base = (url.searchParams.get('base') || cfg.userUrl || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//.test(base)) base = `https://${base}`;
+    const tpl = fs.readFileSync(EXPORT_TEMPLATE, 'utf8');
+    const config = { apiBase: base, siteName: store.state.settings.siteName, exportedAt: nowSec(), version: VERSION };
+    const html = tpl.replace('/*__MEMO_CONFIG__*/null', JSON.stringify(config));
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': 'attachment; filename="index.html"', 'Cache-Control': 'no-store' });
+    res.end(html);
+    store.audit(store.state.admin?.username || 'admin', 'frontend.export', `导出单文件前端 base=${base}`);
+  });
+
+  // ---- 广告 ----
+  route('GET', '/api/admin/ads', async (req) => {
+    requireAdmin(req);
+    const s = store.state.settings;
+    return { ok: true, ads: { enabled: !!s.adsEnabled, mode: s.adsMode || 'custom', html: s.adsHtml || '', items: s.adsItems || [] } };
+  });
+
+  route('PATCH', '/api/admin/ads', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 256 * 1024);
+    const patch = {};
+    if (typeof body.enabled === 'boolean') patch.adsEnabled = body.enabled;
+    if (['custom', 'html'].includes(body.mode)) patch.adsMode = body.mode;
+    if (typeof body.html === 'string') patch.adsHtml = body.html.slice(0, 20000);
+    store.log({ t: 'settings.set', settings: patch });
+    store.audit(store.state.admin?.username || 'admin', 'ads.update', Object.keys(patch).join(', '));
+    return { ok: true };
+  });
+
+  route('POST', '/api/admin/ads/items', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 16 * 1024);
+    const title = String(body.title || '').trim().slice(0, 60);
+    const image = String(body.image || '').trim().slice(0, 2000);
+    const link = String(body.url || '').trim().slice(0, 2000);
+    if (!title) throw new HttpError(400, '请填写广告标题', 'BAD_TITLE');
+    if (image && !/^https?:\/\//.test(image)) throw new HttpError(400, '图片需为 http(s) 链接', 'BAD_IMAGE');
+    if (link && !/^https?:\/\//.test(link)) throw new HttpError(400, '链接需为 http(s)', 'BAD_URL');
+    const item = { id: randomId(8), title, image, url: link, enabled: body.enabled !== false, createdAt: nowSec() };
+    const items = [...(store.state.settings.adsItems || []), item];
+    store.log({ t: 'settings.set', settings: { adsItems: items } });
+    store.audit(store.state.admin?.username || 'admin', 'ads.add', `自有广告 ${title}`);
+    return { ok: true, item, items };
+  });
+
+  route('POST', '/api/admin/ads/items/batch', async (req) => {
+    requireAdmin(req);
+    const body = await readJson(req, 64 * 1024);
+    const ids = new Set(Array.isArray(body.ids) ? body.ids : []);
+    const action = String(body.action || '');
+    let items = store.state.settings.adsItems || [];
+    if (action === 'delete') items = items.filter((i) => !ids.has(i.id));
+    else if (action === 'enable' || action === 'disable') items = items.map((i) => ids.has(i.id) ? { ...i, enabled: action === 'enable' } : i);
+    store.log({ t: 'settings.set', settings: { adsItems: items } });
+    store.audit(store.state.admin?.username || 'admin', `ads.${action}`, `批量 ${ids.size} 个广告`);
+    return { ok: true, items };
   });
 
   // ---- 审计 / 系统 ----

@@ -1,7 +1,7 @@
 import {
   h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PATCH, DEL, ApiError,
-  formatBytes, formatDate, formatRelative, formatAccount, copyText, debounce,
+  formatBytes, formatDate, formatRelative, formatAccount, copyText, debounce, downloadBlob,
 } from '/assets/js/core.js';
 
 const $app = document.getElementById('app');
@@ -93,6 +93,8 @@ const PAGES = [
   { id: 'ipbans', icon: 'gpp_bad', label: 'IP 封禁' },
   { id: 'bots', icon: 'smart_toy', label: '机器人' },
   { id: 'domain', icon: 'language', label: '域名' },
+  { id: 'frontend', icon: 'devices', label: '前端/跨域' },
+  { id: 'ads', icon: 'sell', label: '广告' },
   { id: 'settings', icon: 'settings', label: '设置' },
   { id: 'audit', icon: 'history', label: '审计' },
 ];
@@ -162,7 +164,7 @@ function renderPage() {
   scroll.append(page);
   c.append(scroll);
   S.el.page = page;
-  ({ overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
+  ({ overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
 }
 
 function pageHead(title, ...actions) {
@@ -719,6 +721,120 @@ async function renderDomain(page) {
 
   renderForm();
   if (data.lastResult && !data.lastResult.ok) showResult(data.lastResult);
+}
+
+// ============================ 前端 / 跨域 ============================
+async function renderFrontend(page) {
+  page.append(pageHead('前端 / 跨域', h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: () => renderPage() }, icon('refresh'), '刷新')));
+  page.append(h('div', { class: 'auth-note', style: { marginBottom: '16px' } }, icon('info'),
+    h('span', {}, '把用户界面导出为单文件 index.html（自动写入 API 地址），可部署到 GitHub Pages 等任意静态托管；在此配置跨域白名单或关闭跨域限制后即可开箱即用。')));
+  const wrap = h('div'); page.append(wrap, loadingEl());
+  let data; try { data = await GET('/api/admin/cors'); } catch (e) { toast(e.message, { type: 'error' }); return; }
+  page.querySelector('.empty-state')?.remove();
+
+  // 跨域模式
+  const modeSeg = h('div', { class: 'segmented' },
+    ...[['off', '关闭跨域'], ['whitelist', '白名单'], ['open', '允许所有']].map(([id, label]) =>
+      h('button', { class: data.mode === id ? 'selected' : '', onClick: async (e) => { try { await PATCH('/api/admin/cors', { mode: id }); [...modeSeg.children].forEach((b) => b.classList.remove('selected')); e.currentTarget.classList.add('selected'); toast('跨域模式已更新', { type: 'success' }); } catch (err) { toast(err.message, { type: 'error' }); } } }, label)));
+  // 白名单
+  const listWrap = h('div');
+  const addBtn = h('button', { class: 'btn btn-filled btn-sm stateful', onClick: openAdd }, icon('add'), '批量添加');
+  async function loadOrigins() {
+    const d = await GET('/api/admin/cors');
+    clear(listWrap);
+    if (!d.origins.length) { listWrap.append(h('p', { class: 'muted' }, '暂无白名单。添加前端 Origin（如 https://xxx.github.io）。')); return; }
+    const row = h('div', { class: 'chip-row' });
+    for (const o of d.origins) row.append(h('span', { class: 'chip selected' }, icon('public'), o,
+      h('button', { class: 'icon-btn stateful', style: { width: '24px', height: '24px' }, title: '移除', onClick: async () => { await POST('/api/admin/cors/origins/batch', { origins: [o] }); loadOrigins(); } }, icon('close', 'sm'))));
+    listWrap.append(row);
+  }
+  function openAdd() {
+    const ta = h('textarea', { class: 'tf-input batch-area', rows: '5', placeholder: ' ' });
+    openDialog({
+      title: '批量添加跨域白名单', titleIcon: 'public', wide: true,
+      content: h('div', {}, h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, '每行一个 Origin，例如 https://name.github.io 或 https://app.example.com'),
+        h('label', { class: 'tf' }, h('span', { class: 'tf-box', style: { alignItems: 'flex-start' } }, ta, h('span', { class: 'tf-label' }, 'Origins')))),
+      actions: [{ label: '取消', variant: 'text' }, { label: '添加', variant: 'filled', keepOpen: true, onClick: async (close) => { try { const r = await POST('/api/admin/cors/origins', { text: ta.value }); toast(`已添加 ${r.added} 个`, { type: 'success' }); close(); loadOrigins(); } catch (e) { toast(e.message, { type: 'error' }); return false; } } }],
+    });
+  }
+  // 导出
+  const baseInput = h('input', { class: 'tf-input mono', placeholder: ' ', value: data.userUrl || '' });
+  const exportBtn = h('button', { class: 'btn btn-filled stateful', onClick: doExport }, icon('download'), '导出 index.html');
+  async function doExport() {
+    exportBtn.disabled = true;
+    try {
+      const res = await GET(`/api/admin/export?base=${encodeURIComponent(baseInput.value.trim())}`);
+      const blob = await res.blob();
+      downloadBlob(blob, 'index.html');
+      toast('已导出 index.html，部署到静态托管并配置跨域即可使用', { type: 'success' });
+    } catch (e) { toast(e.message, { type: 'error' }); }
+    exportBtn.disabled = false;
+  }
+  wrap.append(
+    h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('public'), h('h3', {}, '跨域限制')), modeSeg,
+      h('div', { class: 'mt-16' }, h('div', { class: 'row between wrap gap-8', style: { marginBottom: '8px' } }, h('span', { class: 'md-title-s' }, '白名单'), addBtn), listWrap)),
+    h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('devices'), h('h3', {}, '导出单文件前端'),
+      h('span', { class: `badge ${data.exportReady ? 'success' : 'warning'}` }, data.exportReady ? '模板就绪' : '模板未构建')),
+      h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, '导出的 index.html 已内联全部样式/脚本/图标/加密 Worker，并自动写入下方 API 地址，无需手动修改。'),
+      h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' }, baseInput, h('span', { class: 'tf-label' }, 'API 地址（你的用户域名）'))),
+      h('div', { class: 'row end' }, exportBtn)));
+  loadOrigins();
+}
+
+// ============================ 广告 ============================
+async function renderAds(page) {
+  page.append(pageHead('广告投放', h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: () => renderPage() }, icon('refresh'), '刷新')));
+  const wrap = h('div'); page.append(wrap, loadingEl());
+  let data; try { data = await GET('/api/admin/ads'); } catch (e) { toast(e.message, { type: 'error' }); return; }
+  page.querySelector('.empty-state')?.remove();
+  const a = data.ads;
+  const enabled = h('input', { type: 'checkbox', checked: a.enabled });
+  enabled.addEventListener('change', async () => { try { await PATCH('/api/admin/ads', { enabled: enabled.checked }); toast(enabled.checked ? '广告已开启' : '广告已关闭', { type: 'success' }); } catch (e) { toast(e.message, { type: 'error' }); } });
+  const modeSeg = h('div', { class: 'segmented' },
+    ...[['custom', '自有广告'], ['html', '广告网络代码']].map(([id, label]) =>
+      h('button', { class: a.mode === id ? 'selected' : '', onClick: async (e) => { try { await PATCH('/api/admin/ads', { mode: id }); [...modeSeg.children].forEach((b) => b.classList.remove('selected')); e.currentTarget.classList.add('selected'); toast('广告模式已更新', { type: 'success' }); } catch (err) { toast(err.message, { type: 'error' }); } } }, label)));
+  // 自有广告列表
+  const listWrap = h('div');
+  async function loadItems() {
+    const d = await GET('/api/admin/ads');
+    clear(listWrap);
+    if (!d.ads.items.length) { listWrap.append(h('p', { class: 'muted' }, '暂无自有广告。')); return; }
+    for (const it of d.ads.items) {
+      listWrap.append(h('div', { class: 'settings-row' },
+        h('div', { class: 's-content' }, h('div', { class: 's-title' }, it.title), h('div', { class: 's-sub truncate' }, it.url || it.image || '—')),
+        h('label', { class: 'switch' }, (() => { const sw = h('input', { type: 'checkbox', checked: it.enabled }); sw.addEventListener('change', async () => { await POST('/api/admin/ads/items/batch', { ids: [it.id], action: sw.checked ? 'enable' : 'disable' }); }); return sw; })(), h('span', { class: 'switch-track' }, h('span', { class: 'switch-thumb' }))),
+        h('button', { class: 'icon-btn stateful danger', title: '删除', onClick: async () => { await POST('/api/admin/ads/items/batch', { ids: [it.id], action: 'delete' }); loadItems(); } }, icon('delete'))));
+    }
+  }
+  function openAdd() {
+    const title = h('input', { class: 'tf-input', placeholder: ' ' });
+    const image = h('input', { class: 'tf-input', placeholder: ' ', spellcheck: 'false' });
+    const url = h('input', { class: 'tf-input', placeholder: ' ', spellcheck: 'false' });
+    openDialog({
+      title: '添加自有广告', titleIcon: 'sell',
+      content: h('div', {},
+        h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' }, title, h('span', { class: 'tf-label' }, '标题'))),
+        h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' }, image, h('span', { class: 'tf-label' }, '图片 URL（https，可选）'))),
+        h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' }, url, h('span', { class: 'tf-label' }, '点击跳转链接（https，可选）')))),
+      actions: [{ label: '取消', variant: 'text' }, { label: '添加', variant: 'filled', keepOpen: true, onClick: async (close) => { try { await POST('/api/admin/ads/items', { title: title.value, image: image.value, url: url.value }); toast('已添加', { type: 'success' }); close(); loadItems(); } catch (e) { toast(e.message, { type: 'error' }); return false; } } }],
+    });
+  }
+  // 广告网络代码
+  const htmlTa = h('textarea', { class: 'tf-input mono', rows: '6', placeholder: ' ', spellcheck: 'false' });
+  htmlTa.value = a.html || '';
+  const saveHtml = h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: async () => { try { await PATCH('/api/admin/ads', { html: htmlTa.value }); toast('广告代码已保存', { type: 'success' }); } catch (e) { toast(e.message, { type: 'error' }); } } }, icon('save'), '保存代码');
+  wrap.append(
+    h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('sell'), h('h3', {}, '投放开关')),
+      h('div', { class: 'settings-row', style: { padding: '8px 0', borderBottom: 'none' } }, h('div', { class: 's-content' }, h('div', { class: 's-title' }, '启用广告'), h('div', { class: 's-sub' }, '在用户界面展示广告位')),
+        h('label', { class: 'switch' }, enabled, h('span', { class: 'switch-track' }, h('span', { class: 'switch-thumb' })))),
+      h('div', { class: 'mt-16' }, modeSeg)),
+    h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('sell'), h('h3', {}, '自有广告'),
+      h('button', { class: 'btn btn-filled btn-sm stateful', onClick: openAdd }, icon('add'), '添加')), listWrap),
+    h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('integration_instructions'), h('h3', {}, '广告网络代码（AdSense 等）')),
+      h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, '粘贴广告网络的 HTML/JS 代码，将在沙箱 iframe 中渲染。自有广告模式不受影响。'),
+      h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box', style: { alignItems: 'flex-start' } }, htmlTa, h('span', { class: 'tf-label' }, '广告代码'))),
+      h('div', { class: 'row end' }, saveHtml)));
+  loadItems();
 }
 
 // ============================ 设置 ============================

@@ -338,6 +338,29 @@ const FILTERS = [
   { id: 'file', label: '文件', icon: 'insert_drive_file' },
 ];
 
+// 广告位（管理员可开关 / 自定义 / 接入广告网络）
+function adSlot() {
+  const ads = S.config?.ads;
+  if (!ads || !ads.enabled) return null;
+  const wrap = h('div', { class: 'ad-slot' });
+  wrap.append(h('span', { class: 'ad-tag' }, '广告'));
+  if (ads.mode === 'html' && ads.html) {
+    const frame = h('iframe', { class: 'ad-frame', sandbox: 'allow-scripts allow-popups allow-popups-to-escape-sandbox', title: '广告' });
+    frame.srcdoc = ads.html;
+    wrap.append(frame);
+  } else if (ads.items && ads.items.length) {
+    const row = h('div', { class: 'ad-row' });
+    for (const it of ads.items.slice(0, 4)) {
+      const card = h('a', { class: 'ad-card stateful', href: it.url || '#', target: '_blank', rel: 'noopener noreferrer' },
+        it.image ? h('img', { src: it.image, alt: it.title, loading: 'lazy' }) : null,
+        h('span', { class: 'ad-title' }, it.title));
+      row.append(card);
+    }
+    wrap.append(row);
+  } else return null;
+  return wrap;
+}
+
 function renderMemos() {
   const c = S.el.content;
   c.classList.add('view-enter');
@@ -372,7 +395,8 @@ function renderMemos() {
   const scroll = h('div', { class: 'memo-scroll' });
   const empty = h('div', { class: 'empty-state hidden' }, icon('sticky_note_2'), h('h3', {}, '还没有备忘录'), h('p', {}, '点击右下角「新建」按钮，保存你的第一条加密备忘录。'));
   const syncStatus = h('div', { class: 'memo-count', style: { padding: '6px 16px', textAlign: 'center' } });
-  c.append(searchBar, toolbar, selBar, banner, scroll, empty, syncStatus);
+  const ad = adSlot();
+  c.append(searchBar, toolbar, selBar, banner, ad, scroll, empty, syncStatus);
   S.el = { ...S.el, scroll, empty, count, selBar, syncStatus, searchInput };
 
   const columns = S.viewMode === 'grid' ? gridColumns(scroll.clientWidth) : 1;

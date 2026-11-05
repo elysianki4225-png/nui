@@ -121,10 +121,20 @@ input, textarea, select { font-family: inherit; }
 .muted { color: var(--md-on-surface-variant); }
 
 /* ---- 图标 ---- */
-.icon { width: 24px; height: 24px; flex: none; display: inline-block; vertical-align: middle; fill: currentColor; }
+.icon { width: 24px; height: 24px; flex: none; display: inline-block; vertical-align: middle; fill: currentColor; max-width: 100%; max-height: 100%; }
 .icon.sm { width: 18px; height: 18px; }
 .icon.lg { width: 32px; height: 32px; }
 .icon.xl { width: 48px; height: 48px; }
+/* 图标尺寸与容器匹配，避免小图标超出按钮/输入框范围 */
+.btn .icon { width: 18px; height: 18px; }
+.btn-sm .icon { width: 16px; height: 16px; }
+.icon-btn .icon { width: 22px; height: 22px; }
+.chip .icon { width: 16px; height: 16px; }
+.tf-leading .icon, .tf-trailing .icon { width: 20px; height: 20px; }
+.nav-drawer-item .icon { width: 22px; height: 22px; }
+.menu-item .icon { width: 20px; height: 20px; }
+.snackbar .icon { width: 20px; height: 20px; }
+.badge .icon, .ad-tag .icon { width: 12px; height: 12px; }
 
 /* ---- 状态层 + 涟漪 ---- */
 .stateful { position: relative; overflow: hidden; -webkit-tap-highlight-color: transparent; }
@@ -387,7 +397,7 @@ textarea.tf-input { resize: vertical; min-height: 80px; padding-top: 20px; }
 .nav-rail-item.active .nav-indicator { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
 
 /* ---- 分段按钮 ---- */
-.segmented { display: inline-flex; border: 1px solid var(--md-outline); border-radius: var(--md-shape-full); overflow: hidden; }
+.segmented { display: inline-flex; border: 1px solid var(--md-outline); border-radius: var(--md-shape-md); overflow: hidden; }
 .segmented button { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 16px; border: none; background: transparent; color: var(--md-on-surface); font-size: 13px; font-weight: 500; cursor: pointer; border-right: 1px solid var(--md-outline); transition: background-color var(--md-dur-2) var(--md-ease); }
 .segmented button:last-child { border-right: none; }
 .segmented button.selected { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }

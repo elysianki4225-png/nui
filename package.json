@@ -1,0 +1,15 @@
+{
+  "name": "nui-memo",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端加密备忘录（开发期构建工具，运行时零依赖）",
+  "scripts": {
+    "build:export": "node scripts/build-export.mjs",
+    "build:assets": "node scripts/build-assets.mjs .asset-tmp",
+    "test": "node --experimental-vm-modules test/frontend-check.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

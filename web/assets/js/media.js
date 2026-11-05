@@ -1,6 +1,7 @@
 // 媒体中转 + 解密 + 对象 URL 生命周期管理。
 // 浏览器只访问本站 /api/...（VPS 中转 Telegram），绝不直接请求 t.me。
 // 所有 objectURL 由 LRU 缓存统一管理，淘汰即 revoke，杜绝内存泄漏。
+import { API_BASE, IS_EXPORT } from './core.js';
 
 class BlobLRU {
   constructor(maxEntries, maxBytes) {
@@ -36,7 +37,12 @@ class BlobLRU {
 }
 
 async function fetchCipher(path, signal) {
-  const res = await fetch(path, { credentials: 'same-origin', signal, headers: { 'X-Memo-Client': 'web' } });
+  const headers = { 'X-Memo-Client': 'web' };
+  if (IS_EXPORT) {
+    const t = localStorage.getItem('memo-token');
+    if (t) headers.Authorization = `Bearer ${t}`;
+  }
+  const res = await fetch(API_BASE + path, { credentials: IS_EXPORT ? 'omit' : 'same-origin', signal, headers });
   if (!res.ok) {
     let msg = `加载失败 (${res.status})`;
     try { const j = await res.json(); if (j.error) msg = j.error; } catch {}
