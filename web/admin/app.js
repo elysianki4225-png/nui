@@ -587,7 +587,29 @@ async function renderDomain(page) {
   page.querySelector('.empty-state')?.remove();
 
   if (!page.isConnected) return;
-  const f = { ...data.settings, adminOrigin:data.settings.adminOrigin ? {...data.settings.adminOrigin} : null, adminCertPem:'',adminKeyPem:'', certPem: '', keyPem: '', cfApiToken: '' };
+  const draft = { ...data.settings, adminOrigin:data.settings.adminOrigin ? {...data.settings.adminOrigin} : null, adminCertPem:'',adminKeyPem:'',adminCfApiToken:'', certPem: '', keyPem: '', cfApiToken: '' };
+  let endpoint = 'user';
+  let diagnosticEpoch = 0;
+  const originKeys = ['cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'];
+  const adminView = {};
+  for (const key of originKeys) Object.defineProperty(adminView,key,{
+    get:()=> (draft.adminOrigin || draft)[key], set:value=>{ draft.adminOrigin[key]=value; }
+  });
+  for (const [key,rootKey] of Object.entries({userHost:'adminHost',mode:'mode',certPem:'adminCertPem',keyPem:'adminKeyPem',cfApiToken:'adminCfApiToken'})) {
+    Object.defineProperty(adminView,key,{get:()=>draft[rootKey],set:value=>{draft[rootKey]=value;}});
+  }
+  let f = draft;
+  const haveCert = () => endpoint === 'admin' ? data.haveAdminCert : data.haveCert;
+  const expanded = {user:false,admin:false};
+  let savedAdminOrigin = draft.adminOrigin;
+  function selectEndpoint(value) {
+    diagnosticEpoch++;
+    expanded[endpoint] = advancedOpen;
+    endpoint = value; f = value === 'admin' ? adminView : draft;
+    advancedOpen = expanded[value];
+    clear(dnsResult); clear(diagResult); clear(cfVerifyResult);
+    renderForm();
+  }
   const statusPanel = h('div', { class: 'panel' });
   const formWrap = h('div');
   const resultWrap = h('div');
@@ -595,7 +617,7 @@ async function renderDomain(page) {
   page._disposeAcceleration = renderAcceleration(wrap);
 
   function urlRow(label, url) {
-    return h('div', { class: 'kv' }, h('div', { class: 'k' }, label),
+    return h('div', { class: 'kv' }, h('div', { class: 'k' }, ['用户界面','管理界面'].includes(label) ? h('button',{class:'btn btn-text btn-sm',onClick:()=>selectEndpoint(label === '用户界面' ? 'user' : 'admin')},label,' · 配置') : label),
       h('div', { class: 'v row gap-4', style: { alignItems: 'center', flexWrap: 'wrap' } },
         h('a', { href: url, target: '_blank', rel: 'noopener', class: 'mono', style: { wordBreak: 'break-all' } }, url),
         h('button', { class: 'icon-btn stateful', title: '复制', onClick: () => copyText(url) }, icon('content_copy'))));
@@ -626,7 +648,7 @@ async function renderDomain(page) {
   }
   function text(key, placeholder, opts = {}) {
     const input = h('input', { class: 'tf-input', placeholder: ' ', value: f[key] ?? '', ...opts });
-    input.addEventListener('input', () => { f[key] = input.value; if (key === 'userHost' || key === 'adminHost') { clear(dnsResult); clear(diagResult); const help = formWrap.querySelector('.domain-dns-help'); if (help) help.replaceWith(dnsHelp()); } });
+    input.addEventListener('input', () => { f[key] = input.value; if (key === 'userHost' || key === 'adminHost') { diagnosticEpoch++; clear(dnsResult); clear(diagResult); const help = formWrap.querySelector('.domain-dns-help'); if (help) help.replaceWith(dnsHelp()); } });
     return input;
   }
   function num(key, min, max) {
@@ -682,13 +704,31 @@ async function renderDomain(page) {
 
   function renderForm() {
     clear(formWrap);
+    const acceleration = wrap.querySelector('.acceleration');
+    if (acceleration) acceleration.hidden = endpoint === 'admin';
+    const tabs = h('div',{class:'segmented',role:'group','aria-label':'选择配置入口',style:{marginBottom:'16px',display:'flex'}},
+      ...[['user','用户界面'],['admin','管理界面']].map(([id,label])=>h('button',{class:endpoint===id?'selected':'','aria-pressed':String(endpoint===id),onClick:()=>selectEndpoint(id),style:{flex:'1'}},label)));
+    formWrap.append(tabs,h('h3',{},endpoint==='user'?'用户界面配置':'管理界面配置'),h('p',{class:'muted md-body-s'},'两端草稿分别保留，应用时一起校验保存。仅修改管理端不会改变用户域名。'));
+    if(endpoint==='admin') {
+      const independent=h('input',{type:'checkbox',checked:!!draft.adminOrigin,onChange:()=>{
+        if(!independent.checked) savedAdminOrigin=draft.adminOrigin;
+        draft.adminOrigin=independent.checked ? savedAdminOrigin || Object.fromEntries(originKeys.map(k=>[k,draft[k]])) : null;
+        renderForm();
+      }});
+      formWrap.append(h('label',{class:'row gap-8'},independent,h('span',{},'管理端使用独立配置')));
+      if(!draft.adminOrigin) {
+        formWrap.append(h('div',{class:'panel'},field('管理域名（可选）',text('userHost','admin.example.com')),
+          h('p',{class:'auth-note'},'当前沿用用户端回源配置。启用独立配置后，可单独设置 CDN、端口、证书、Token 和诊断。共享证书必须覆盖两个域名。'),
+          h('button',{class:'btn btn-filled',onClick:apply},'应用更改')));
+        return;
+      }
+    }
     const cdnOn = f.cdn !== 'none';
     // 域名 panel
     const domainPanel = h('div', { class: 'panel' },
       h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '2. 填写访问域名')),
-      h('div', { style: { marginBottom: '12px' } }, seg([['domain', '自定义域名'], ['ip', 'nip.io / IP']], () => f.mode, (v) => { f.mode = v; })),
-      field('用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
-      field('管理域名（可选）', text('adminHost', 'admin.example.com', { spellcheck: 'false' }), '可与用户端使用不同域名；留空则使用用户域名 /admin/。更换管理域名不改变用户 API 地址。'),
+      endpoint === 'user' ? h('div', { style: { marginBottom: '12px' } }, seg([['domain', '自定义域名'], ['ip', 'nip.io / IP']], () => f.mode, (v) => { f.mode = v; })) : null,
+      field(endpoint === 'admin' ? '管理域名' : '用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
       h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
         h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析'),
         h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: runProbe }, icon('fact_check'), '一键诊断（CDN / 证书 / 回源）')),
@@ -696,7 +736,7 @@ async function renderDomain(page) {
     // CDN panel
     const cdnPanel = h('div', { class: 'panel' },
       h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, '1. 选择访问方式')),
-      h('div', { style: { marginBottom: '12px' } }, seg([['none', '直连（无 CDN）'], ['cloudflare', 'Cloudflare 小黄云'], ['custom', '第三方 CDN']], () => f.cdn, (v) => { f.cdn = v; if (v !== 'none' && !['flexible', 'full', 'strict'].includes(f.sslMode)) f.sslMode = data.haveCert ? 'strict' : 'flexible'; if (v === 'cloudflare') f.realIpHeader = 'cf-connecting-ip'; else if (v === 'custom') f.realIpHeader = 'x-forwarded-for'; })),
+      h('div', { style: { marginBottom: '12px' } }, seg([['none', '直连（无 CDN）'], ['cloudflare', 'Cloudflare 小黄云'], ['custom', '第三方 CDN']], () => f.cdn, (v) => { f.cdn = v; if (v !== 'none' && !['flexible', 'full', 'strict'].includes(f.sslMode)) f.sslMode = haveCert() ? 'strict' : 'flexible'; if (v === 'cloudflare') f.realIpHeader = 'cf-connecting-ip'; else if (v === 'custom') f.realIpHeader = 'x-forwarded-for'; })),
       f.cdn === 'custom' ? field('CDN 名称', text('cdnName', '例如 阿里云 CDN / 腾讯云 EdgeOne')) : null,
       cdnOn ? h('div', { class: 'domain-technical' },
         h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, '加密模式（CDN 到源站）'),
@@ -721,7 +761,7 @@ async function renderDomain(page) {
       keyTa.addEventListener('input', () => { f.keyPem = keyTa.value; });
       certPanel = h('div', { class: 'panel' },
         h('div', { class: 'panel-head' }, icon('lock'), h('h3', {}, '回源证书（Full / Strict）'),
-          h('span', { class: `badge ${data.haveCert ? 'success' : 'neutral'}` }, data.haveCert ? '已安装' : '未安装')),
+          h('span', { class: `badge ${haveCert() ? 'success' : 'neutral'}` }, haveCert() ? '已安装' : '未安装')),
         h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, 'Strict 需要受 CDN 信任的回源证书。Cloudflare 可在 SSL/TLS → Origin Server 创建 Origin CA 证书后粘贴到下方；或填写 API Token 自动签发。留空则沿用已安装证书或仅用 Flexible。'),
         field('证书 PEM（certificate）', certTa),
         field('私钥 PEM（private key）', keyTa),
@@ -744,63 +784,32 @@ async function renderDomain(page) {
     advanced.append(actions.firstChild);
     if (cdnOn) cdnPanel.append(h('p', { class: 'auth-note' }, icon('info'), h('span', {},
       f.sslMode === 'flexible' ? '当前为简易连接：无需回源证书。请在 CDN 控制台将 SSL 模式设为 Flexible（源站链路为 HTTP）。需要全程加密时，在高级设置中选 Strict 并配置证书。' : `当前为 ${f.sslMode === 'strict' ? 'Strict' : 'Full'} 加密连接，请确保 CDN 控制台模式一致，并配置回源证书。`)));
-    formWrap.append(cdnPanel, domainPanel, adminOriginPanel(), advanced,
+    formWrap.append(domainPanel, cdnPanel, advanced,
       h('p', { class: 'muted md-body-s' }, '保存会重载代理；更换域名后需在新地址重新登录。CDN 控制台设置不会自动修改。'), actions);
   }
 
-  function adminOriginPanel() {
-    const toggle = h('input',{type:'checkbox',checked:!!f.adminOrigin,onChange:()=>{
-      f.adminOrigin = toggle.checked ? Object.fromEntries(['cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'].map(k=>[k,f[k]])) : null;
-      renderForm();
-    }});
-    const panel=h('div',{class:'panel'},h('div',{class:'panel-head'},icon('admin_panel_settings'),h('h3',{},'管理端回源配置')),
-      h('label',{class:'row gap-8'},toggle,h('span',{},'管理端使用独立配置')),
-      h('p',{class:'muted md-body-s'},'默认沿用用户端回源设置。独立配置需要填写不同的管理域名；仅修改管理端不会改变用户域名或导出页 API 地址。应用时仍会短暂重载服务。'));
-    if (!f.adminOrigin) {
-      panel.append(h('p',{class:'auth-note'},'沿用模式：两端端口/CDN相同。Full/Strict 使用同一份证书，必须覆盖两个域名；否则请选择独立配置并上传管理端证书。'));
-      return panel;
-    }
-    const a=f.adminOrigin;
-    const select=(key,items)=>{const el=h('select',{class:'tf-input'},...items.map(([value,label])=>h('option',{value,selected:a[key]===value},label)));el.addEventListener('change',()=>{a[key]=el.value;if(key==='cdn'){a.realIpHeader=el.value==='cloudflare'?'cf-connecting-ip':'x-forwarded-for';if(el.value!=='none'&&a.sslMode==='auto')a.sslMode='flexible';}renderForm();});return el;};
-    const port=(key)=>{const el=h('input',{class:'tf-input',type:'number',min:1,max:65535,placeholder:' ',value:a[key]});el.addEventListener('input',()=>{a[key]=Number(el.value);});return el;};
-    panel.append(field('管理端 CDN',select('cdn',[['none','直连（自动证书）'],['cloudflare','Cloudflare'],['custom','第三方 CDN']])));
-    if(a.cdn!=='none') {
-      panel.append(field('管理端 SSL 模式',select('sslMode',[['flexible','Flexible · HTTP'],['full','Full · HTTPS'],['strict','Strict · HTTPS']])),
-        h('div',{class:'two-col'},field('管理回源 HTTP 端口',port('cfHttpPort')),field('管理回源 HTTPS 端口',port('cfHttpsPort'))),
-        h('p',{class:'auth-note'},'这里配置的是源站监听端口。CF 两个域名必须各自配置正确的 SSL 模式和回源端口规则；不会自动修改 CF 控制台。新端口还需在 VPS/云防火墙放行。不同域名可共享同协议端口，但不能混用 HTTP/HTTPS。'),
-        field('管理端真实 IP 头',select('realIpHeader',[['cf-connecting-ip','CF-Connecting-IP'],['x-forwarded-for','X-Forwarded-For'],['x-real-ip','X-Real-IP'],['true-client-ip','True-Client-IP']])));
-      if(a.cdn==='cloudflare'){const only=h('input',{type:'checkbox',checked:a.cfOnly,onChange:()=>{a.cfOnly=only.checked;}});panel.append(h('label',{class:'row gap-8'},only,h('span',{},'管理入口仅允许 CF 节点回源')));}
-      const cert=h('textarea',{class:'tf-input mono',rows:3,placeholder:' ',value:f.adminCertPem,spellcheck:'false',onInput:e=>{f.adminCertPem=e.target.value;}});
-      const key=h('textarea',{class:'tf-input mono',rows:3,placeholder:' ',value:f.adminKeyPem,spellcheck:'false',onInput:e=>{f.adminKeyPem=e.target.value;}});
-      panel.append(h('p',{class:'muted'},data.haveAdminCert?'管理端独立证书已安装；留空沿用（服务器会验证是否覆盖新域名）。':'管理端尚未安装独立证书；Full/Strict 必须上传覆盖管理域名的证书和私钥。'),field('管理端证书 PEM',cert),field('管理端私钥 PEM',key));
-    }
-    const diagnostic=h('p',{class:'muted md-body-s',role:'status'});
-    panel.append(h('button',{class:'btn btn-tonal btn-sm',onClick:async e=>{
-      const btn=e.currentTarget;btn.disabled=true;diagnostic.textContent='正在检测管理域名（保存前诊断仍反映现网配置）…';
-      try{const r=await POST('/api/admin/domain/probe',{host:f.adminHost});diagnostic.textContent=[r.dns?.error,r.https?`HTTPS：${r.https.status || r.https.error}`:'',...(r.hints||[])].filter(Boolean).join('；');}catch(e){diagnostic.textContent=e.message;}finally{btn.disabled=false;}
-    }},'检测管理域名'),diagnostic);
-    return panel;
-  }
-
   async function checkDns() {
+    const target = f, epoch = diagnosticEpoch;
     clear(dnsResult); dnsResult.append(h('span', { class: 'muted' }, '解析中…'));
     try {
       const r = await POST('/api/admin/domain/check', { host: f.userHost });
+      if(f !== target || epoch !== diagnosticEpoch) return;
       clear(dnsResult);
       if (r.error) { dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, r.error)); return; }
       dnsResult.append(h('span', { class: 'muted' }, '解析到：'), h('span', { class: 'mono' }, r.addresses.join(', ')),
         r.cloudflare ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, 'Cloudflare 边缘') : h('span', { class: 'badge neutral', style: { marginLeft: '8px' } }, '非 CF IP'),
         r.matchesServer === true ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, '指向本机') :
         r.matchesServer === false && !r.cloudflare && f.cdn === 'none' ? h('span', { class: 'badge warning', style: { marginLeft: '8px' } }, '与本机 IP 不一致') : null);
-    } catch (e) { clear(dnsResult); dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); }
+    } catch (e) { if(f !== target || epoch !== diagnosticEpoch) return; clear(dnsResult); dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); }
   }
 
   // 一键诊断：DNS / 边缘 HTTPS / TLS 证书 / 本机回源
   async function runProbe() {
+    const target = f, epoch = diagnosticEpoch;
     clear(diagResult); diagResult.append(h('span', { class: 'muted md-body-s' }, '诊断中（最多约 10 秒）…'));
     let r;
-    try { r = await POST('/api/admin/domain/probe', { host: f.userHost }); }
-    catch (e) { clear(diagResult); diagResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); return; }
+    try { r = await POST('/api/admin/domain/probe', { host: f.userHost }); if(f !== target || epoch !== diagnosticEpoch) return; }
+    catch (e) { if(f !== target || epoch !== diagnosticEpoch) return; clear(diagResult); diagResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); return; }
     clear(diagResult);
     const line = (label, ok, detail) => h('div', { class: 'kv' },
       h('div', { class: 'k row gap-4', style: { alignItems: 'center' } }, icon(ok ? 'check_circle' : 'error', 'sm'), label),
@@ -818,19 +827,21 @@ async function renderDomain(page) {
   }
 
   async function verifyToken() {
+    const target = f, epoch = diagnosticEpoch;
     clear(cfVerifyResult); cfVerifyResult.append(h('span', { class: 'muted' }, '验证中…'));
     try {
       const r = await POST('/api/admin/domain/cf-verify', { token: f.cfApiToken });
+      if(f !== target || epoch !== diagnosticEpoch) return;
       clear(cfVerifyResult);
       cfVerifyResult.append(r.ok
         ? h('span', { class: 'badge success' }, `Token 有效（${r.status}）`)
         : h('span', { class: 'badge warning' }, r.error || 'Token 无效'));
-    } catch (e) { clear(cfVerifyResult); cfVerifyResult.append(h('span', { class: 'badge warning' }, e.message)); }
+    } catch (e) { if(f !== target || epoch !== diagnosticEpoch) return; clear(cfVerifyResult); cfVerifyResult.append(h('span', { class: 'badge warning' }, e.message)); }
   }
 
   async function preview() {
     try {
-      const r = await POST('/api/admin/domain/preview', f);
+      const r = await POST('/api/admin/domain/preview', draft);
       const pre = h('pre', { class: 'mono md-body-s', style: { background: 'var(--md-surface-container)', padding: '12px', borderRadius: '8px', overflow: 'auto', maxHeight: '320px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, r.caddyfile);
       openDialog({
         title: 'Caddyfile 预览', titleIcon: 'description', wide: true,
@@ -841,13 +852,14 @@ async function renderDomain(page) {
   }
 
   async function apply() {
+    const f = draft;
     if (f.adminOrigin) {
       if (!f.adminHost || f.adminHost === f.userHost) { toast('独立回源需要不同的管理域名',{type:'error'}); return; }
       if (!!f.adminCertPem.trim() !== !!f.adminKeyPem.trim()) { toast('管理端证书与私钥必须同时填写',{type:'error'}); return; }
-      if (f.adminOrigin.cdn !== 'none' && ['full','strict'].includes(f.adminOrigin.sslMode) && !data.haveAdminCert && !(f.adminCertPem.trim() && f.adminKeyPem.trim())) {toast('管理端加密回源需要独立证书',{type:'error'});return;}
+      if (f.adminOrigin.cdn !== 'none' && ['full','strict'].includes(f.adminOrigin.sslMode) && !data.haveAdminCert && !(f.adminCertPem.trim() && f.adminKeyPem.trim()) && !(f.adminOrigin.cdn === 'cloudflare' && f.adminCfApiToken.trim())) {selectEndpoint('admin'); advancedOpen=true; renderForm(); toast('管理端加密回源需要独立证书或 Cloudflare Token',{type:'error'});return;}
     }
-    if (f.cdn !== 'none' && f.sslMode !== 'flexible' && !data.haveCert && !(f.certPem.trim() && f.keyPem.trim()) && !f.cfApiToken.trim()) {
-      advancedOpen = true; renderForm();
+    if (f.cdn !== 'none' && f.sslMode !== 'flexible' && !data.haveCert && !(f.certPem.trim() && f.keyPem.trim()) && !(f.cdn === 'cloudflare' && f.cfApiToken.trim())) {
+      selectEndpoint('user'); advancedOpen = true; renderForm();
       toast('加密回源需要证书：请配置证书或选择简易 Flexible 模式', { type: 'error' }); return;
     }
     if (!!f.certPem.trim() !== !!f.keyPem.trim()) { toast('请同时填写证书和私钥', { type: 'error' }); return; }

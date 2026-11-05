@@ -26,6 +26,12 @@ try{
  const originalKey=readFileSync(file('admin.key'));writeFileSync(file('admin.key'),readFileSync(file('user.key')));
  r=apply(settings);assert(!r.ok&&r.error.includes('不匹配'));writeFileSync(file('admin.key'),originalKey);
  console.log('PASS mismatched independent private key rejected');
+ writeFileSync(file('curl'),'#!/bin/sh\necho ADMIN-TOKEN-SECRET >&2\nexit 1\n',{mode:0o700});
+ r=apply(settings,{adminCfApiToken:'ADMIN-TOKEN-SECRET'});
+ assert(!r.ok && r.rolledBack && r.error.includes('管理端自动签发'));
+ assert(!JSON.stringify(r).includes('ADMIN-TOKEN-SECRET'));
+ assert.equal(readFileSync(file('config.json'),'utf8'),previous);
+ console.log('PASS admin Token issuance failure rolls back without leaking secret');
  env.NUI_CADDY_BIN=file('caddy');
  writeFileSync(file('caddy'),'#!/bin/sh\necho invalid-config >&2\nexit 1\n');chmodSync(file('caddy'),0o700);
  const before=Object.fromEntries(['config.json','Caddyfile','user.pem','user.key','admin.pem','admin.key','domain.json'].map(n=>[n,readFileSync(file(n))]));

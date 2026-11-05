@@ -313,7 +313,7 @@ export function registerAdminRoutes(h, ctx) {
     requireAdmin(req);
     if (!limiter.allow(`domain:${ip}`, 30, 3600)) throw new HttpError(429, '域名修改过于频繁，请稍后再试', 'RATE_LIMIT');
     const body = await readJson(req, 256 * 1024);
-    const extras = { adminCertPem:body.adminCertPem, adminKeyPem:body.adminKeyPem, certPem: body.certPem, keyPem: body.keyPem, cfApiToken: body.cfApiToken };
+    const extras = { adminCfApiToken:body.adminCfApiToken, adminCertPem:body.adminCertPem, adminKeyPem:body.adminKeyPem, certPem: body.certPem, keyPem: body.keyPem, cfApiToken: body.cfApiToken };
     const result = await ctx.domain.apply(body, extras);
     return { ok: true, ...result };
   });

@@ -344,7 +344,7 @@ export function applyRequest(req, { dryRun = false } = {}) {
         haveCert = true;
         result.certIssued = true;
       } catch (e) {
-        throw new Error(`自动签发 Origin CA 证书失败：${e.message}；原配置保持不变。`);
+        throw new Error('自动签发 Origin CA 证书失败，请检查 Token 权限与域名；原配置保持不变。');
       }
     } else {
       haveCert = fs.existsSync(certFile) && fs.existsSync(keyFile);
@@ -363,6 +363,21 @@ export function applyRequest(req, { dryRun = false } = {}) {
         execFileSync('chown',['root:caddy',adminCertFile,adminKeyFile]);
       }
       haveAdminCert = true;
+    }
+    if (settings.adminOrigin?.cdn === 'cloudflare' && settings.adminOrigin.sslMode !== 'flexible' && req.adminCfApiToken && !(req.adminCertPem && req.adminKeyPem)) {
+      try {
+        if (!dryRun) {
+          const {cert,key} = issueCloudflareOriginCert(settings.adminHost,req.adminCfApiToken);
+          validateOriginCertificate(cert,key,[settings.adminHost]);
+          atomicWrite(adminCertFile,cert+'\n',0o644);
+          atomicWrite(adminKeyFile,key+'\n',0o640);
+          execFileSync('chown',['root:caddy',adminCertFile,adminKeyFile],{stdio:'ignore'});
+        }
+        haveAdminCert=true; result.adminCertIssued=true;
+      } catch {
+        // execFile errors may contain curl arguments including the secret token.
+        throw new Error('管理端自动签发 Origin CA 证书失败，请检查 Token 权限与域名；原配置将恢复');
+      }
     }
     if (settings.adminOrigin && ['full','strict'].includes(settings.adminOrigin.sslMode) && !haveAdminCert) throw new Error('管理端 Full/Strict 缺少独立回源证书，已取消应用');
     if (!dryRun && haveCert && settings.cdn !== 'none') validateOriginCertificate(fs.readFileSync(certFile),fs.readFileSync(keyFile),[settings.userHost,...(!settings.adminOrigin && settings.adminHost && settings.adminHost !== settings.userHost ? [settings.adminHost] : [])]);

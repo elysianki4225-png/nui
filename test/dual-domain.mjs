@@ -40,6 +40,8 @@ try{
  ok(!r.ok&&r.rolledBack&&JSON.parse(await readFile(confFile,'utf8')).userHost==='old.example.com','missing admin certificate cancels and rolls back user changes');
  r=applyRequest({settings:raw,certPem,keyPem,adminCertPem:certPem,adminKeyPem:keyPem,paths},{dryRun:true});
  ok(r.ok&&JSON.parse(await readFile(confFile,'utf8')).adminOrigin.cfHttpsPort===8443,'both origins persist together');
+ r=applyRequest({settings:raw,certPem,keyPem,adminCfApiToken:'secret-admin-token',paths},{dryRun:true});
+ ok(r.ok&&r.adminCertIssued&&!JSON.stringify(r).includes('secret-admin-token'),'independent admin token dry-run does not persist secret');
  ok(JSON.parse(await readFile(confFile,'utf8')).keep==='untouched','unrelated configuration preserved');
  const port=8984;await writeFile(confFile,JSON.stringify({...s,dataDir:dir,host:'127.0.0.1',port,trustProxy:true}));
  const start=async()=>{child=spawn(process.execPath,['server/index.js'],{env:{...process.env,MEMO_CONFIG:confFile,MEMO_DEV:'1'},stdio:['ignore','pipe','pipe']});for(let i=0;i<100;i++){try{if((await fetch(`http://127.0.0.1:${port}/api/health`)).ok)return;}catch{}await new Promise(r=>setTimeout(r,50));}throw new Error('startup failed');};
