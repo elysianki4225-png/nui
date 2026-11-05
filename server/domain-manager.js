@@ -66,6 +66,8 @@ export class DomainManager {
     return 'manual';
   }
 
+  haveAdminCert() { return fs.existsSync(SYS.adminCertFile) && fs.existsSync(SYS.adminKeyFile); }
+
   haveCert() {
     try { return fs.existsSync(this.certFile) && fs.existsSync(this.keyFile); } catch { return false; }
   }
@@ -88,6 +90,7 @@ export class DomainManager {
       settings,
       urls: domainUrls(settings, { dev: this.cfg.dev }),
       haveCert: this.haveCert(),
+      haveAdminCert: this.haveAdminCert(),
       applyMode: this.applyMode,
       canApply: this.applyMode !== 'manual',
       certFile: this.certFile,
@@ -146,7 +149,7 @@ export class DomainManager {
         out.hints.push('后端进程自检正常不代表公网回源正常；该自检不经过 Caddy、防火墙或 Cloudflare。');
       }
     }
-    if (scheme === 'http' || input.scheme === 'http' || this.cfg.sslMode === 'flexible') {
+    if (scheme === 'http' || input.scheme === 'http' || (host === this.cfg.adminHost && this.cfg.adminOrigin ? this.cfg.adminOrigin.sslMode : this.cfg.sslMode) === 'flexible') {
       out.http = await this.#probeUrl(`http://${host}/api/health`);
     }
     if (!out.hints.length) out.hints.push('未发现明显问题。');
@@ -203,14 +206,14 @@ export class DomainManager {
 
   preview(input) {
     const { settings, warnings } = normalizeDomain(input, this.cfg);
-    const haveCert = this.haveCert();
-    const caddyfile = buildCaddyfile(settings, { haveCert, backendPort: this.cfg.port, certFile: this.certFile, keyFile: this.keyFile });
+    const haveCert = this.haveCert() || !!(input.certPem && input.keyPem);
+    const caddyfile = buildCaddyfile(settings, { haveCert, backendPort: this.cfg.port, certFile: this.certFile, keyFile: this.keyFile, haveAdminCert:this.haveAdminCert() || !!(input.adminCertPem && input.adminKeyPem) });
     return { settings, warnings, caddyfile, urls: domainUrls(settings, { dev: this.cfg.dev }), haveCert };
   }
 
   applyToCfg(s) {
     const cfg = this.cfg;
-    cfg.mode = s.mode; cfg.userHost = s.userHost; cfg.adminHost = s.adminHost;
+    cfg.mode = s.mode; cfg.userHost = s.userHost; cfg.adminHost = s.adminHost; cfg.adminOrigin = s.adminOrigin || null;
     cfg.cdn = s.cdn; cfg.cdnName = s.cdnName; cfg.sslMode = s.sslMode;
     cfg.cfHttpPort = s.cfHttpPort; cfg.cfHttpsPort = s.cfHttpsPort;
     cfg.realIpHeader = s.realIpHeader; cfg.cfOnly = s.cfOnly;
@@ -220,7 +223,7 @@ export class DomainManager {
   }
 
   persistRuntime(s) {
-    try { atomicWrite(this.domainFile, JSON.stringify(s, null, 2)); } catch (e) { console.error('[domain] 写入 domain.json 失败:', e.message); }
+    atomicWrite(this.domainFile, JSON.stringify(s, null, 2));
   }
 
   async apply(input, extras = {}) {
@@ -229,16 +232,19 @@ export class DomainManager {
     const urls = domainUrls(settings, { dev: this.cfg.dev });
     const mode = this.applyMode;
 
+    // Validate the complete pair before modifying runtime settings.
+    buildCaddyfile(settings, {backendPort:this.cfg.port,haveCert:this.haveCert(),haveAdminCert:this.haveAdminCert()});
+    if (mode === 'manual' && settings.adminOrigin) throw new HttpError(400,'独立管理回源需要一键安装器启用特权应用；当前手动模式不能安全安装独立证书','MANUAL_ADMIN_ORIGIN');
     if (mode === 'inline' || mode === 'manual') {
       // 无特权：热更新后端行为 + 持久化运行时覆盖；manual 额外给出 Caddyfile 供手动应用
-      this.applyToCfg(settings);
       this.persistRuntime(settings);
+      this.applyToCfg(settings);
       const result = {
         id, ok: true, settings, urls, warnings, appliedAt: Math.floor(Date.now() / 1000),
         inline: mode === 'inline', manual: mode === 'manual', haveCert: this.haveCert(),
       };
       if (mode === 'manual') {
-        result.caddyfile = buildCaddyfile(settings, { haveCert: this.haveCert(), backendPort: this.cfg.port, certFile: this.certFile, keyFile: this.keyFile });
+        result.caddyfile = buildCaddyfile(settings, { haveCert: this.haveCert(), backendPort: this.cfg.port, certFile: this.certFile, keyFile: this.keyFile, haveAdminCert:this.haveAdminCert() });
         result.instructions = '当前环境未启用特权自动应用。请将下方 Caddyfile 覆盖到 /etc/caddy/Caddyfile 后执行 systemctl reload caddy，并重启 nui-memo 服务。';
         warnings.push('无特权自动应用：后端已热更新，但 Caddy/证书需手动应用（见返回的 Caddyfile）。');
       }
@@ -250,6 +256,7 @@ export class DomainManager {
     // systemd / sudo：写请求文件，由 root helper 应用（会重载 Caddy 并重启后端）
     const req = {
       id, settings,
+      adminCertPem: extras.adminCertPem || undefined, adminKeyPem: extras.adminKeyPem || undefined,
       certPem: extras.certPem || undefined, keyPem: extras.keyPem || undefined, cfApiToken: extras.cfApiToken || undefined,
       paths: {
         confFile: this.cfg.configFile || SYS.confFile, caddyFile: SYS.caddyFile,

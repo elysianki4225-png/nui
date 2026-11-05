@@ -33,7 +33,7 @@ export function normalizeAcceleration(body, cdn) {
 export function planGuide(plan, current) {
   const stale = Boolean(plan.forHost && (plan.forHost !== current.settings.userHost || plan.forCdn !== current.settings.cdn));
   return { stale, host: current.settings.userHost, cdn: current.settings.cdn, urls: current.urls,
-    sharedAdmin: current.settings.mode !== 'ip' || current.settings.adminHost === current.settings.userHost,
+    sharedAdmin: !current.settings.adminHost || current.settings.adminHost === current.settings.userHost,
     records: !plan.enabled || stale ? [] : plan.kind === 'ip'
       ? plan.ips.map(value=>({type:net.isIP(value)===6?'AAAA':'A',name:current.settings.userHost,value}))
       : [{type:'CNAME',name:current.settings.userHost,value:plan.cname}],

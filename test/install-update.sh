@@ -33,3 +33,22 @@ setup_cloudflare_cert >/dev/null
 [[ "$(cat "$CF_CERT_FILE")" == cert && "$(cat "$CF_KEY_FILE")" == key ]]
 grep -q 'strict' "$CONF_FILE"
 echo 'PASS existing Origin CA certificate/key and Strict mode survive reuse'
+# A normal upgrade must not collapse the independent management origin.
+cp "$ROOT/server/domain.js" "$APP_DIR/server/domain.js"
+CONF_DIR="$TMP/conf"; CADDY_DIR="$TMP/caddy";mkdir -p "$CONF_DIR" "$CADDY_DIR"
+CONF_FILE="$CONF_DIR/config.json";CADDY_FILE="$CADDY_DIR/Caddyfile";CADDY_BIN=/bin/true
+CF_CERT_FILE="$CONF_DIR/cf-origin.pem";CF_KEY_FILE="$CONF_DIR/cf-origin.key"
+printf cert > "$CF_CERT_FILE";printf key > "$CF_KEY_FILE"
+printf cert > "$CONF_DIR/admin-origin.pem";printf key > "$CONF_DIR/admin-origin.key"
+printf '{"userHost":"memo.example.com","adminHost":"manage.example.net","adminOrigin":{"cdn":"cloudflare","sslMode":"strict","cfHttpPort":8080,"cfHttpsPort":8443}}' > "$CONF_FILE"
+MODE=domain;USER_HOST=memo.example.com;ADMIN_HOST=manage.example.net;SSL_MODE=strict;HAVE_CF_CERT=1;CF_HTTP_PORT=80;CF_HTTPS_PORT=443
+write_caddyfile >/dev/null
+grep -q 'https://memo.example.com:443' "$CADDY_FILE"
+grep -q 'https://manage.example.net:8443' "$CADDY_FILE"
+grep -q "tls $CONF_DIR/admin-origin.pem $CONF_DIR/admin-origin.key" "$CADDY_FILE"
+echo 'PASS installer reuses independent management ports and certificate paths'
+cp "$CADDY_FILE" "$TMP/before-caddy"
+CADDY_BIN=/bin/false
+if (write_caddyfile >/dev/null 2>&1);then echo 'FAIL invalid Caddyfile accepted';exit 1;fi
+cmp "$CADDY_FILE" "$TMP/before-caddy"
+echo 'PASS failed installer proxy validation leaves existing Caddyfile untouched'

@@ -587,7 +587,7 @@ async function renderDomain(page) {
   page.querySelector('.empty-state')?.remove();
 
   if (!page.isConnected) return;
-  const f = { ...data.settings, certPem: '', keyPem: '', cfApiToken: '' };
+  const f = { ...data.settings, adminOrigin:data.settings.adminOrigin ? {...data.settings.adminOrigin} : null, adminCertPem:'',adminKeyPem:'', certPem: '', keyPem: '', cfApiToken: '' };
   const statusPanel = h('div', { class: 'panel' });
   const formWrap = h('div');
   const resultWrap = h('div');
@@ -621,6 +621,7 @@ async function renderDomain(page) {
     return el;
   }
   function field(label, input, helper) {
+    input.setAttribute('aria-label',label);
     return h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' }, input, h('span', { class: 'tf-label' }, label)), helper ? h('span', { class: 'tf-helper' }, helper) : null);
   }
   function text(key, placeholder, opts = {}) {
@@ -687,7 +688,7 @@ async function renderDomain(page) {
       h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '2. 填写访问域名')),
       h('div', { style: { marginBottom: '12px' } }, seg([['domain', '自定义域名'], ['ip', 'nip.io / IP']], () => f.mode, (v) => { f.mode = v; })),
       field('用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
-      f.mode === 'ip' ? field('管理子域名', text('adminHost', 'admin.example.com', { spellcheck: 'false' }), 'IP 模式下管理端使用独立子域名') : null,
+      field('管理域名（可选）', text('adminHost', 'admin.example.com', { spellcheck: 'false' }), '可与用户端使用不同域名；留空则使用用户域名 /admin/。更换管理域名不改变用户 API 地址。'),
       h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
         h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析'),
         h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: runProbe }, icon('fact_check'), '一键诊断（CDN / 证书 / 回源）')),
@@ -743,8 +744,42 @@ async function renderDomain(page) {
     advanced.append(actions.firstChild);
     if (cdnOn) cdnPanel.append(h('p', { class: 'auth-note' }, icon('info'), h('span', {},
       f.sslMode === 'flexible' ? '当前为简易连接：无需回源证书。请在 CDN 控制台将 SSL 模式设为 Flexible（源站链路为 HTTP）。需要全程加密时，在高级设置中选 Strict 并配置证书。' : `当前为 ${f.sslMode === 'strict' ? 'Strict' : 'Full'} 加密连接，请确保 CDN 控制台模式一致，并配置回源证书。`)));
-    formWrap.append(cdnPanel, domainPanel, advanced,
+    formWrap.append(cdnPanel, domainPanel, adminOriginPanel(), advanced,
       h('p', { class: 'muted md-body-s' }, '保存会重载代理；更换域名后需在新地址重新登录。CDN 控制台设置不会自动修改。'), actions);
+  }
+
+  function adminOriginPanel() {
+    const toggle = h('input',{type:'checkbox',checked:!!f.adminOrigin,onChange:()=>{
+      f.adminOrigin = toggle.checked ? Object.fromEntries(['cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'].map(k=>[k,f[k]])) : null;
+      renderForm();
+    }});
+    const panel=h('div',{class:'panel'},h('div',{class:'panel-head'},icon('admin_panel_settings'),h('h3',{},'管理端回源配置')),
+      h('label',{class:'row gap-8'},toggle,h('span',{},'管理端使用独立配置')),
+      h('p',{class:'muted md-body-s'},'默认沿用用户端回源设置。独立配置需要填写不同的管理域名；仅修改管理端不会改变用户域名或导出页 API 地址。应用时仍会短暂重载服务。'));
+    if (!f.adminOrigin) {
+      panel.append(h('p',{class:'auth-note'},'沿用模式：两端端口/CDN相同。Full/Strict 使用同一份证书，必须覆盖两个域名；否则请选择独立配置并上传管理端证书。'));
+      return panel;
+    }
+    const a=f.adminOrigin;
+    const select=(key,items)=>{const el=h('select',{class:'tf-input'},...items.map(([value,label])=>h('option',{value,selected:a[key]===value},label)));el.addEventListener('change',()=>{a[key]=el.value;if(key==='cdn'){a.realIpHeader=el.value==='cloudflare'?'cf-connecting-ip':'x-forwarded-for';if(el.value!=='none'&&a.sslMode==='auto')a.sslMode='flexible';}renderForm();});return el;};
+    const port=(key)=>{const el=h('input',{class:'tf-input',type:'number',min:1,max:65535,placeholder:' ',value:a[key]});el.addEventListener('input',()=>{a[key]=Number(el.value);});return el;};
+    panel.append(field('管理端 CDN',select('cdn',[['none','直连（自动证书）'],['cloudflare','Cloudflare'],['custom','第三方 CDN']])));
+    if(a.cdn!=='none') {
+      panel.append(field('管理端 SSL 模式',select('sslMode',[['flexible','Flexible · HTTP'],['full','Full · HTTPS'],['strict','Strict · HTTPS']])),
+        h('div',{class:'two-col'},field('管理回源 HTTP 端口',port('cfHttpPort')),field('管理回源 HTTPS 端口',port('cfHttpsPort'))),
+        h('p',{class:'auth-note'},'这里配置的是源站监听端口。CF 两个域名必须各自配置正确的 SSL 模式和回源端口规则；不会自动修改 CF 控制台。新端口还需在 VPS/云防火墙放行。不同域名可共享同协议端口，但不能混用 HTTP/HTTPS。'),
+        field('管理端真实 IP 头',select('realIpHeader',[['cf-connecting-ip','CF-Connecting-IP'],['x-forwarded-for','X-Forwarded-For'],['x-real-ip','X-Real-IP'],['true-client-ip','True-Client-IP']])));
+      if(a.cdn==='cloudflare'){const only=h('input',{type:'checkbox',checked:a.cfOnly,onChange:()=>{a.cfOnly=only.checked;}});panel.append(h('label',{class:'row gap-8'},only,h('span',{},'管理入口仅允许 CF 节点回源')));}
+      const cert=h('textarea',{class:'tf-input mono',rows:3,placeholder:' ',value:f.adminCertPem,spellcheck:'false',onInput:e=>{f.adminCertPem=e.target.value;}});
+      const key=h('textarea',{class:'tf-input mono',rows:3,placeholder:' ',value:f.adminKeyPem,spellcheck:'false',onInput:e=>{f.adminKeyPem=e.target.value;}});
+      panel.append(h('p',{class:'muted'},data.haveAdminCert?'管理端独立证书已安装；留空沿用（服务器会验证是否覆盖新域名）。':'管理端尚未安装独立证书；Full/Strict 必须上传覆盖管理域名的证书和私钥。'),field('管理端证书 PEM',cert),field('管理端私钥 PEM',key));
+    }
+    const diagnostic=h('p',{class:'muted md-body-s',role:'status'});
+    panel.append(h('button',{class:'btn btn-tonal btn-sm',onClick:async e=>{
+      const btn=e.currentTarget;btn.disabled=true;diagnostic.textContent='正在检测管理域名（保存前诊断仍反映现网配置）…';
+      try{const r=await POST('/api/admin/domain/probe',{host:f.adminHost});diagnostic.textContent=[r.dns?.error,r.https?`HTTPS：${r.https.status || r.https.error}`:'',...(r.hints||[])].filter(Boolean).join('；');}catch(e){diagnostic.textContent=e.message;}finally{btn.disabled=false;}
+    }},'检测管理域名'),diagnostic);
+    return panel;
   }
 
   async function checkDns() {
@@ -806,6 +841,11 @@ async function renderDomain(page) {
   }
 
   async function apply() {
+    if (f.adminOrigin) {
+      if (!f.adminHost || f.adminHost === f.userHost) { toast('独立回源需要不同的管理域名',{type:'error'}); return; }
+      if (!!f.adminCertPem.trim() !== !!f.adminKeyPem.trim()) { toast('管理端证书与私钥必须同时填写',{type:'error'}); return; }
+      if (f.adminOrigin.cdn !== 'none' && ['full','strict'].includes(f.adminOrigin.sslMode) && !data.haveAdminCert && !(f.adminCertPem.trim() && f.adminKeyPem.trim())) {toast('管理端加密回源需要独立证书',{type:'error'});return;}
+    }
     if (f.cdn !== 'none' && f.sslMode !== 'flexible' && !data.haveCert && !(f.certPem.trim() && f.keyPem.trim()) && !f.cfApiToken.trim()) {
       advancedOpen = true; renderForm();
       toast('加密回源需要证书：请配置证书或选择简易 Flexible 模式', { type: 'error' }); return;

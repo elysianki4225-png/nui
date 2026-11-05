@@ -1,3 +1,4 @@
+import { originForRequest } from './domain.js';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { nowSec, sha256, timingSafeEqualStr } from './util.js';
@@ -266,6 +267,7 @@ export class IpBanList {
 }
 
 export function clientIp(req, cfg) {
+  cfg = originForRequest(req,cfg);
   let ip = req.socket.remoteAddress || '';
   if (cfg.trustProxy) {
     // 按 CDN 配置选择真实访客 IP 头：Cloudflare 默认 CF-Connecting-IP，第三方默认 XFF 首个

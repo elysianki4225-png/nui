@@ -476,3 +476,7 @@ sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
 支持 IPv4/IPv6、公网与 CF 网段检查、超时/并发/响应体限制、离开页面取消，以及网站域名/CDN 变化后旧方案过期提示。共用管理域名时会警告手动 DNS 更改同样影响管理入口。关闭助手不会回滚手动 DNS；多个 IP 不是自动故障切换，VPS 耗时不是用户端速度。
 
 具体接入条件、CDN 套餐限制、安全边界及回退方法见 [访问加速说明](docs/ACCESS-ACCELERATION.md)。
+
+### 独立管理域名与回源配置
+
+域名页可同时配置用户域名和管理域名，并为管理端启用独立 CDN、SSL、HTTP/HTTPS 回源端口及证书。默认继承旧设置；只改管理端不改变用户 API 域名。两域名均走 Cloudflare 且使用不同回源端口时，还需分别配置 CF 回源规则及防火墙。详见 [双域名配置说明](docs/DUAL-DOMAIN.md)。

@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,readFileSync,rmSync,chmodSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+const dir=mkdtempSync(path.join(tmpdir(),'nui-dual-cert-'));
+const file=n=>path.join(dir,n);
+const settings={mode:'domain',userHost:'memo.example.com',adminHost:'manage.example.net',cdn:'cloudflare',sslMode:'strict',cfHttpPort:80,cfHttpsPort:443,adminOrigin:{cdn:'cloudflare',sslMode:'strict',cfHttpPort:8080,cfHttpsPort:8443}};
+try{
+ for(const [name,host] of [['user','memo.example.com'],['admin','manage.example.net']])execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',file(name+'.key'),'-out',file(name+'.pem'),'-days','1','-subj',`/CN=${host}`,'-addext',`subjectAltName=DNS:${host}`],{stdio:'ignore'});
+ writeFileSync(file('config.json'),JSON.stringify({userHost:'old.example.com',secret:'unchanged'}));
+ writeFileSync(file('Caddyfile'),'old proxy');
+ writeFileSync(file('caddy'),'#!/bin/sh\nexit 0\n',{mode:0o700});
+ writeFileSync(file('systemctl'),'#!/bin/sh\nexit 0\n',{mode:0o700});
+ const env={...process.env,PATH:dir+':'+process.env.PATH,NUI_CONF_FILE:file('config.json'),NUI_CADDY_FILE:file('Caddyfile'),NUI_CF_CERT_FILE:file('user.pem'),NUI_CF_KEY_FILE:file('user.key'),NUI_ADMIN_CERT_FILE:file('admin.pem'),NUI_ADMIN_KEY_FILE:file('admin.key'),NUI_DATA_DIR:dir,NUI_CADDY_BIN:process.env.NUI_CADDY_TEST_BIN || file('caddy')};
+ const apply=(s,extra={})=>JSON.parse(execFileSync(process.execPath,['--input-type=module','-e',`import {applyRequest} from './server/domain.js';console.log(JSON.stringify(applyRequest(${JSON.stringify({settings:s,...extra})})));`],{env,encoding:'utf8',stdio:['ignore','pipe','pipe']}));
+ let r=apply(settings);assert(r.ok,r.error);assert(readFileSync(file('Caddyfile'),'utf8').includes('https://manage.example.net:8443'));
+ console.log('PASS two real SAN certificates and independent keys accepted ('+(process.env.NUI_CADDY_TEST_BIN?'real Caddy validation':'Caddy validation stubbed')+', systemctl stubbed)');
+ r=apply({...settings,cfHttpPort:8080,cfHttpsPort:8443,adminOrigin:{cdn:'none'}});assert(r.ok,r.error);
+ r=apply(settings);assert(r.ok,r.error);
+ console.log('PASS mixed direct/CDN proxy configuration accepted');
+ const previous=readFileSync(file('config.json'),'utf8');
+ r=apply({...settings,adminHost:'wrong.example.net'});assert(!r.ok&&r.rolledBack&&r.error.includes('不覆盖'));assert.equal(readFileSync(file('config.json'),'utf8'),previous);
+ r=apply({...settings,adminOrigin:null});assert(!r.ok&&r.error.includes('不覆盖'));assert.equal(readFileSync(file('config.json'),'utf8'),previous);
+ console.log('PASS wrong admin SAN and inherited single-domain certificate rejected without config change');
+ const originalKey=readFileSync(file('admin.key'));writeFileSync(file('admin.key'),readFileSync(file('user.key')));
+ r=apply(settings);assert(!r.ok&&r.error.includes('不匹配'));writeFileSync(file('admin.key'),originalKey);
+ console.log('PASS mismatched independent private key rejected');
+ env.NUI_CADDY_BIN=file('caddy');
+ writeFileSync(file('caddy'),'#!/bin/sh\necho invalid-config >&2\nexit 1\n');chmodSync(file('caddy'),0o700);
+ const before=Object.fromEntries(['config.json','Caddyfile','user.pem','user.key','admin.pem','admin.key','domain.json'].map(n=>[n,readFileSync(file(n))]));
+ r=apply({...settings,adminOrigin:{...settings.adminOrigin,cfHttpsPort:2053}});assert(!r.ok&&r.rolledBack&&r.error.includes('Caddyfile'));
+ for(const [name,bytes] of Object.entries(before))assert(readFileSync(file(name)).equals(bytes),name);
+ console.log('PASS downstream Caddy validation failure restores both endpoints/certificates/runtime config byte-for-byte');
+}finally{rmSync(dir,{recursive:true,force:true});}
