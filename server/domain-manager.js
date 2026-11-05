@@ -206,8 +206,8 @@ export class DomainManager {
 
   preview(input) {
     const { settings, warnings } = normalizeDomain(input, this.cfg);
-    const haveCert = this.haveCert() || !!(input.certPem && input.keyPem);
-    const caddyfile = buildCaddyfile(settings, { haveCert, backendPort: this.cfg.port, certFile: this.certFile, keyFile: this.keyFile, haveAdminCert:this.haveAdminCert() || !!(input.adminCertPem && input.adminKeyPem) });
+    const haveCert = this.haveCert() || !!(input.certPem && input.keyPem) || !!(settings.cdn === 'cloudflare' && input.cfApiToken);
+    const caddyfile = buildCaddyfile(settings, { haveCert, backendPort: this.cfg.port, certFile: this.certFile, keyFile: this.keyFile, haveAdminCert:this.haveAdminCert() || !!(input.adminCertPem && input.adminKeyPem) || !!(settings.adminOrigin?.cdn === 'cloudflare' && input.adminCfApiToken) });
     return { settings, warnings, caddyfile, urls: domainUrls(settings, { dev: this.cfg.dev }), haveCert };
   }
 
@@ -256,6 +256,7 @@ export class DomainManager {
     // systemd / sudo：写请求文件，由 root helper 应用（会重载 Caddy 并重启后端）
     const req = {
       id, settings,
+      adminCfApiToken: extras.adminCfApiToken || undefined,
       adminCertPem: extras.adminCertPem || undefined, adminKeyPem: extras.adminKeyPem || undefined,
       certPem: extras.certPem || undefined, keyPem: extras.keyPem || undefined, cfApiToken: extras.cfApiToken || undefined,
       paths: {
