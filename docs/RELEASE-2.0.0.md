@@ -57,7 +57,7 @@
 - 真实 TG 使用平台限流、下载上限、旧消息删除限制、网络可达性：本次用模拟器验证协议与异常逻辑，不声称已验证生产 Telegram。清理失败保留记录，可重试，不能保证平台允许删除所有旧消息。
 - TG 模式仅内容对象存 TG；账号、索引、配置及公开素材服务端密钥仍在 VPS。升级前备份 `/var/lib/nui-memo` 与 `/etc/nui-memo`，包括本地 `objects/`（若使用本地存储）。
 - 真实 Caddy/systemd/UFW、ACME、CF Flexible/Full/Strict、Origin CA 签发、第三方 CDN 的供应商配置需在部署端验收；本次为配置生成、dry-run、stub 和故障注入。CF-only 反代规则不能替代网络防火墙。
-- 从旧版首次升级请下载 2.0.0 Release 附带的新安装器再执行 `--update`；不要依赖旧版 n-ui 调用旧安装器自更新。
+- 从旧版首次升级请下载 2.0.0 标签中的新安装器再执行 `--update`；不要依赖旧版 n-ui 调用旧安装器自更新。
 - 从此版本起 Full/Strict 缺少证书会失败并保留旧配置，必须补证书或明确选择 Flexible。
 - GIF 处理是纯色/近纯色边缘连通抠图，不是 AI 人物/复杂背景分割。图片有明确尺寸/字节/帧数/超时限制，GIF 不偷偷转换为静态图。
 - 广告网络脚本可能受 srcdoc 沙箱、CSP 或广告商要求限制；自有广告与配置接口已验收，不保证所有第三方广告代码都可运行。
@@ -84,7 +84,7 @@ bash scripts/check-release.sh
 先备份 `/etc/nui-memo` 和数据目录。下载新版安装器，不依赖机器上的旧安装脚本：
 
 ```bash
-curl -fL https://github.com/elysianki4225-png/nui/releases/download/v2.0.0/install.sh -o /tmp/nui-install-2.0.0.sh
+curl -fL https://github.com/elysianki4225-png/nui/raw/refs/tags/v2.0.0/install.sh -o /tmp/nui-install-2.0.0.sh
 sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
 ```
 
