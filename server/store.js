@@ -67,8 +67,7 @@ export class Store {
         const snap = JSON.parse(raw);
         this.state = { ...defaultState(), ...snap, settings: { ...defaultState().settings, ...(snap.settings || {}) } };
       } catch (e) {
-        console.error('[store] 快照损坏，尝试从事件日志恢复:', e.message);
-        this.state = defaultState();
+        throw new Error(`数据快照损坏，已停止启动并保留原文件；请从备份恢复：${e.message}`);
       }
     }
     if (fs.existsSync(this.logFile)) {
@@ -80,7 +79,7 @@ export class Store {
           this.apply(JSON.parse(line));
           applied++;
         } catch (e) {
-          console.error('[store] 跳过损坏日志行:', e.message);
+          throw new Error(`事件日志损坏，已停止启动并保留原文件：${e.message}`);
         }
       }
       this.logLines = applied;
@@ -158,7 +157,7 @@ export class Store {
         break;
       }
       case 'ban.remove': delete s.ipBans[ev.id]; break;
-      case 'bot.add': s.bots.push(ev.bot); break;
+      case 'bot.add': { const i = s.bots.findIndex(b => b.id === ev.bot.id); if (i < 0) s.bots.push(ev.bot); else s.bots[i] = ev.bot; break; }
       case 'bot.update': {
         const b = s.bots.find((x) => x.id === ev.id);
         if (b) Object.assign(b, ev.patch);
@@ -218,6 +217,7 @@ export class Store {
   }
 
   async flushDurable() {
+    if (this.closed) throw new Error('数据存储已关闭，禁止删除原文件');
     await this.compact();
     if (this.writeFailure) throw new Error('元数据写入失败；为避免丢失数据，未删除原文件，请检查磁盘并重启');
   }

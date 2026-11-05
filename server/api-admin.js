@@ -105,7 +105,7 @@ export function registerAdminRoutes(h, ctx) {
     const body = await readJson(req, 256 * 1024);
     const accounts = Array.isArray(body.accounts) ? body.accounts.slice(0, 2000) : [];
     const action = String(body.action || '');
-    let affected = 0;
+    let affected = 0; const retired = [];
     for (const account of accounts) {
       const u = store.state.users[account];
       if (!u) continue;
@@ -115,16 +115,17 @@ export function registerAdminRoutes(h, ctx) {
         const arr = store.accountIndex.get(account) || [];
         for (const m of [...arr]) {
           store.log({ t: 'memo.delete', id: m.id });
-          for (const p of m.parts || []) pool.deleteMessage(p.botId, p.messageId);
-          if (m.thumb) pool.deleteMessage(m.thumb.botId, m.thumb.messageId);
+          retired.push(...(m.parts || []).filter(Boolean));
+          if (m.thumb) retired.push(m.thumb);
         }
-        if (u.avatar) pool.deleteMessage(u.avatar.botId, u.avatar.messageId).catch(() => {});
+        if (u.avatar) retired.push(u.avatar);
         store.log({ t: 'user.delete', account });
         ctx.sessions.deleteForAccount(account);
         affected++;
       }
     }
     store.audit(store.state.admin?.username || 'admin', `users.${action}`, `批量操作 ${affected} 个账号`);
+    await pool.retire(retired);
     return { ok: true, affected };
   });
 

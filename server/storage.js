@@ -73,7 +73,10 @@ export class StoragePool extends TelegramPool {
     return { mode: this.mode(), telegramReady: this.bots().length > 0, local: refs.filter(x => kind(x.ref) === 'local').length, telegram: refs.filter(x => kind(x.ref) === 'telegram').length,
       migration: this.store.state.settings.storageMigration || null, cleanupPending: (this.store.state.settings.storageCleanup || []).length };
   }
-  async durable() { await this.store.flushDurable(); }
+  async durable() {
+    if (this.draining || this.store.closed) throw new Error('服务正在关闭，原文件未删除');
+    await this.store.flushDurable();
+  }
   async step() {
     if (this.migrationBusy) throw new HttpError(409, '迁移正在进行', 'BUSY');
     this.migrationBusy = true;
@@ -99,9 +102,16 @@ export class StoragePool extends TelegramPool {
       return this.status();
     } finally { this.migrationBusy = false; }
   }
+  async retire(refs) {
+    if (refs.length) this.store.log({ t: 'settings.set', settings: { storageCleanup: [...(this.store.state.settings.storageCleanup || []), ...refs] } });
+    await this.durable();
+    // Serial cleanup avoids one fsync/full snapshot per concurrently deleting file.
+    for (const ref of refs) await this.cleanupOne(ref);
+  }
   async cleanupOne(ref) {
     // A crash between journal and reference replacement must never delete a live object.
     const live = this.references().some(x => x.ref.botId === ref.botId && x.ref.fileId === ref.fileId);
+    await this.durable();
     if (!live && !await this.deleteMessage(ref.botId, ref.messageId)) return false;
     this.store.log({ t: 'settings.set', settings: { storageCleanup: (this.store.state.settings.storageCleanup || []).filter(x => x.botId !== ref.botId || x.fileId !== ref.fileId) } });
     await this.durable(); return true;

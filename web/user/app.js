@@ -1,6 +1,6 @@
 import { loadAppearance } from '/assets/js/appearance.js';
 import {
-  API_BASE, h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
+  API_BASE, closeOverlays, registerOverlay, h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PUT, PATCH, DEL, ApiError,
   formatBytes, formatDate, formatRelative, formatAccount, copyText, debounce, downloadBlob, TYPE_META,
 } from '/assets/js/core.js';
@@ -240,6 +240,8 @@ async function logout() {
 }
 
 function cleanupSession(full) {
+  closeOverlays();
+  S.syncing = false;
   S.syncAbort?.abort();
   S.detailAbort?.abort();
   S.virtual?.destroy(); S.virtual = null;
@@ -465,18 +467,22 @@ async function syncMemos() {
   if (S.syncing || !S.crypto) return;
   S.syncing = true;
   S.memos = []; S.decrypted.clear(); S.nextCursor = null;
-  S.syncAbort = new AbortController();
+  const controller = S.syncAbort = new AbortController();
+  const cryptoClient = S.crypto;
   refreshList();
   try {
     let guard = 0;
     do {
       const params = new URLSearchParams({ limit: '200' });
       if (S.nextCursor) params.set('cursor', S.nextCursor);
-      const r = await GET('/api/user/memos?' + params.toString(), { signal: S.syncAbort.signal });
+      const r = await GET('/api/user/memos?' + params.toString(), { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      if (S.crypto !== cryptoClient) return;
       S.stats = r.stats;
       S.memos.push(...r.items);
       S.nextCursor = r.nextCursor;
-      const { items: dec } = await S.crypto.decryptMetaBatch(r.items.map((m) => ({ id: m.id, meta: m.meta })));
+      const { items: dec } = await cryptoClient.decryptMetaBatch(r.items.map((m) => ({ id: m.id, meta: m.meta })));
+      controller.signal.throwIfAborted();
       for (const d of dec) if (d.obj) S.decrypted.set(d.id, d.obj);
       throttledRefresh();
       guard++;
@@ -484,8 +490,7 @@ async function syncMemos() {
   } catch (e) {
     if (e.name !== 'AbortError' && S.crypto) toast('同步失败: ' + e.message, { type: 'error' });
   } finally {
-    S.syncing = false;
-    if (S.virtual) refreshList();
+    if (S.syncAbort === controller) { S.syncing = false; if (S.virtual) refreshList(); }
   }
 }
 
@@ -582,24 +587,25 @@ async function batchPin() {
   const ids = [...S.selection];
   const anyUnpinned = ids.some((id) => !S.memos.find((m) => m.id === id)?.pinned);
   try {
-    await POST('/api/user/memos/batch-pin', { ids, pinned: anyUnpinned });
+    for (let i = 0; i < ids.length; i += 1000) await POST('/api/user/memos/batch-pin', { ids: ids.slice(i, i + 1000), pinned: anyUnpinned });
     ids.forEach((id) => { const m = S.memos.find((x) => x.id === id); if (m) m.pinned = anyUnpinned; });
     toast(anyUnpinned ? '已置顶' : '已取消置顶', { type: 'success' });
     exitSelectMode();
-  } catch (e) { toast(e.message, { type: 'error' }); }
+  } catch (e) { toast(e.message, { type: 'error' }); syncMemos(); }
 }
 async function batchDelete() {
   if (!S.selection.size) return;
   const ok = await confirmDialog({ title: '删除备忘录', message: `确定删除选中的 ${S.selection.size} 条备忘录吗？此操作不可恢复。`, confirmLabel: '删除', danger: true, icon: 'delete' });
   if (!ok) return;
   try {
-    await POST('/api/user/memos/batch-delete', { ids: [...S.selection] });
+    const ids = [...S.selection];
+    for (let i = 0; i < ids.length; i += 1000) await POST('/api/user/memos/batch-delete', { ids: ids.slice(i, i + 1000) });
     const set = S.selection;
     S.memos = S.memos.filter((m) => !set.has(m.id));
     set.forEach((id) => { S.decrypted.delete(id); S.media.release(id); });
     toast('已删除', { type: 'success' });
     exitSelectMode();
-  } catch (e) { toast(e.message, { type: 'error' }); }
+  } catch (e) { toast(e.message, { type: 'error' }); syncMemos(); }
 }
 
 // ============================ 详情 ============================
@@ -613,7 +619,7 @@ async function openDetail(memo) {
   S.virtual?.destroy(); S.virtual = null;
   const tm = TYPE_META[memo.type] || TYPE_META.file;
   const head = h('div', { class: 'detail-head' },
-    h('button', { class: 'icon-btn stateful', onClick: closeDetail }, icon('arrow_back')),
+    h('button', { class: 'icon-btn stateful', title: '返回', 'aria-label': '返回', onClick: closeDetail }, icon('arrow_back')),
     h('span', { class: 'md-title-m flex-1 truncate' }, d.title || tm.label),
     h('button', { class: 'icon-btn stateful', title: memo.pinned ? '取消置顶' : '置顶', onClick: () => togglePin(memo) }, icon('push_pin')),
     h('button', { class: 'icon-btn stateful', title: '更多', onClick: (e) => openMenu(e.currentTarget, [
@@ -698,9 +704,10 @@ function openLightbox(url, title) {
   const box = h('div', { class: 'lightbox' },
     h('img', { src: url, alt: title || '' }),
     h('div', { class: 'lightbox-bar' },
-      h('button', { class: 'icon-btn stateful', onClick: () => downloadBlob(fetch(url).then((r) => r.blob()), title || 'image') }, icon('download')),
+      h('button', { class: 'icon-btn stateful', onClick: async () => { try { downloadBlob(await (await fetch(url)).blob(), title || 'image'); } catch (e) { toast(e.message, { type: 'error' }); } } }, icon('download')),
       h('button', { class: 'icon-btn stateful', onClick: close }, icon('close'))));
-  function close() { box.classList.remove('show'); setTimeout(() => box.remove(), 300); document.removeEventListener('keydown', onKey); }
+  const unregister = registerOverlay(() => close(true));
+  function close(immediate = false) { unregister(); box.classList.remove('show'); if (immediate === true) box.remove(); else setTimeout(() => box.remove(), 300); document.removeEventListener('keydown', onKey); }
   function onKey(e) { if (e.key === 'Escape') close(); }
   box.addEventListener('click', (e) => { if (e.target === box) close(); });
   document.addEventListener('keydown', onKey);

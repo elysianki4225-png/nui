@@ -42,6 +42,10 @@ ok(strict.includes('https://m.example.com:8443') && strict.includes('tls /c.pem 
 const custom = buildCaddyfile(normalizeDomain({ userHost: 'm.example.com', cdn: 'custom', sslMode: 'full', cfHttpPort: 80, cfHttpsPort: 443 }, {}).settings, { haveCert: true });
 ok(custom.includes('auto_https off') && custom.includes('https://m.example.com:443'), '第三方 CDN 同样支持');
 
+const guarded = buildCaddyfile(normalizeDomain({ userHost: 'm.example.com', cdn: 'cloudflare', cfOnly: true }, {}).settings, {});
+ok(guarded.includes('@non_cf not remote_ip 173.245.48.0/20') && guarded.includes('respond @non_cf'), '运行时 CF-only 在 Caddy 层限制来源');
+ok(guarded.includes('request_header @non_cf -CF-Connecting-IP'), '非 CF 来源不能伪造访客 IP 头');
+
 console.log('[3] 特权 dry-run 应用（证书上传 / 配置合并 / 回退）');
 const confFile = path.join(tmp, 'etc', 'config.json');
 const caddyFile = path.join(tmp, 'caddy', 'Caddyfile');
@@ -57,7 +61,7 @@ if (certPem) {
   ok(existsSync(path.join(dataDir, 'domain.json')) && existsSync(path.join(dataDir, 'domain-result.json')), '写入 domain.json 与 result');
 }
 const r2 = applyRequest({ id: 't2', settings: { mode: 'domain', userHost: 'nocert.example.com', cdn: 'cloudflare', sslMode: 'strict' }, paths: { ...paths, certFile: path.join(tmp, 'none.pem'), keyFile: path.join(tmp, 'none.key') } }, { dryRun: true });
-ok(r2.ok && r2.settings.sslMode === 'flexible' && r2.warnings.some((w) => w.includes('回退')), 'Strict 无证书回退 Flexible');
+ok(!r2.ok && r2.rolledBack && r2.error.includes('缺少回源证书'), 'Strict 无证书拒绝静默降级并回滚');
 
 console.log('[4] Cloudflare IP 判断');
 ok(isCloudflareIp('104.16.1.1') && isCloudflareIp('172.67.1.1') && isCloudflareIp('2606:4700::1'), '识别 CF IPv4/IPv6');

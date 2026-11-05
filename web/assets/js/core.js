@@ -114,6 +114,13 @@ export function toast(message, { type = 'info', duration = 3200, action } = {}) 
   return dismiss;
 }
 
+const overlayClosers = new Set();
+export function registerOverlay(close) { overlayClosers.add(close); return () => overlayClosers.delete(close); }
+export function closeOverlays() {
+  for (const close of [...overlayClosers]) close();
+  document.querySelectorAll('.dialog-scrim, .menu-scrim, .menu, .lightbox').forEach(el => el.remove());
+}
+
 // ---------- 对话框 ----------
 export function openDialog({ title, titleIcon, content, actions = [], wide = false, fullMobile = false, onClose, dismissable = true } = {}) {
   const scrim = h('div', { class: 'dialog-scrim' });
@@ -124,12 +131,14 @@ export function openDialog({ title, titleIcon, content, actions = [], wide = fal
   else if (content) contentEl.append(content);
   dialog.append(contentEl);
   let closed = false;
-  function close() {
+  const unregister = registerOverlay(() => close(true));
+  function close(immediate = false) {
     if (closed) return;
-    closed = true;
+    closed = true; unregister();
     scrim.classList.remove('show');
     document.removeEventListener('keydown', onKey);
-    setTimeout(() => { scrim.remove(); onClose?.(); }, 300);
+    if (immediate === true) { scrim.remove(); onClose?.(); }
+    else setTimeout(() => { scrim.remove(); onClose?.(); }, 300);
   }
   if (actions.length) {
     const bar = h('div', { class: 'dialog-actions' });
@@ -181,10 +190,13 @@ export function openMenu(anchor, items) {
       onClick: () => { close(); item.onClick?.(); },
     }, item.icon ? icon(item.icon) : null, h('span', { class: 'flex-1' }, item.label), item.selected ? icon('check', 'sm') : null));
   }
-  function close() {
+  const unregister = registerOverlay(() => close(true));
+  function close(immediate = false) {
+    unregister();
     menu.classList.remove('show');
     document.removeEventListener('keydown', onKey);
-    setTimeout(() => { scrim.remove(); menu.remove(); }, 180);
+    if (immediate === true) { scrim.remove(); menu.remove(); }
+    else setTimeout(() => { scrim.remove(); menu.remove(); }, 180);
   }
   function onKey(e) { if (e.key === 'Escape') close(); }
   scrim.addEventListener('pointerdown', close);

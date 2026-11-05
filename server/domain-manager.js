@@ -4,15 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import dns from 'node:dns';
 import tls from 'node:tls';
-import { randomId } from './util.js';
+import { randomId, HttpError } from './util.js';
 import {
-  SYS, normalizeDomain, settingsFromCfg, domainUrls, buildCaddyfile,
+  CF_V4, CF_V6, SYS, normalizeDomain, settingsFromCfg, domainUrls, buildCaddyfile,
   atomicWrite, behindCdn, isValidHost, CF_PROXY_HTTP_PORTS, CF_PROXY_HTTPS_PORTS,
 } from './domain.js';
 
 // Cloudflare 官方 IP 段（用于「是否套了小黄云」的粗略判断）
-const CF_V4 = ['173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'];
-const CF_V6 = ['2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32'];
+
 
 function ipInCidr(ip, cidr) {
   const [net, bitsStr] = cidr.split('/');
@@ -258,11 +257,10 @@ export class DomainManager {
         backendPort: this.cfg.port, caddyBin: SYS.caddyBin,
       },
     };
-    // 先热更新后端，保证重启前的请求也按新域名处理
-    this.applyToCfg(settings);
-    this.persistRuntime(settings);
+    // Keep the current host valid until the privileged helper validates/reloads.
+    if (fs.existsSync(this.requestFile)) throw new HttpError(409, '已有域名应用任务，请等待完成', 'DOMAIN_BUSY');
     // 直接写入（open/write/close），确保 systemd PathChanged(IN_CLOSE_WRITE) 能触发
-    fs.writeFileSync(this.requestFile, JSON.stringify(req), { mode: 0o600 });
+    fs.writeFileSync(this.requestFile, JSON.stringify(req), { mode: 0o600, flag: 'wx' });
     this.store.audit(this.store.state.admin?.username || 'admin', 'domain.apply', `${settings.userHost} · CDN=${settings.cdn} · SSL=${settings.sslMode}（${mode}）`);
     if (mode === 'sudo' && this.applyCommand) {
       const { execFile } = await import('node:child_process');

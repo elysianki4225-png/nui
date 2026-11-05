@@ -451,3 +451,9 @@ npm install --prefix /tmp/nui-ui-test jsdom@24 @napi-rs/canvas@0.1.80
 NUI_JSDOM_MODULE=/tmp/nui-ui-test/node_modules/jsdom node test/appearance-ui.cjs
 NUI_CANVAS_MODULE=/tmp/nui-ui-test/node_modules/@napi-rs/canvas node test/theme-worker.cjs
 ```
+
+## 2.0.0 发布验收
+
+已增加完整回归入口 `bash scripts/check-release.sh` 和 GitHub Actions 校验。
+本次自检修复了更新、鉴权、并发上传、持久化/迁移、域名失败回滚和媒体生命周期等边界问题。
+详细的测试结果、修复清单、生产部署限制与重现命令见 [2.0.0 验收报告](docs/RELEASE-2.0.0.md)，功能与升级说明见 [更新日志](CHANGELOG.md)。

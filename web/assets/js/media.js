@@ -54,6 +54,7 @@ async function fetchCipher(path, signal) {
 export class MediaManager {
   constructor(cryptoClient, { maxThumbs = 150, maxFull = 8, maxFullBytes = 256 * 1024 * 1024 } = {}) {
     this.crypto = cryptoClient;
+    this.lifecycle = new AbortController();
     this.thumbs = new BlobLRU(maxThumbs, 64 * 1024 * 1024);
     this.full = new BlobLRU(maxFull, maxFullBytes);
     this.thumbPending = new Map();
@@ -61,12 +62,15 @@ export class MediaManager {
   }
 
   async thumbUrl(memo, signal) {
+    signal = signal ? AbortSignal.any([signal, this.lifecycle.signal]) : this.lifecycle.signal;
+    signal.throwIfAborted();
     const hit = this.thumbs.get(memo.id);
     if (hit) return hit.url;
     if (this.thumbPending.has(memo.id)) return this.thumbPending.get(memo.id);
     const p = (async () => {
       const cipher = await fetchCipher(`/api/user/memos/${memo.id}/thumb`, signal);
       const { buffer } = await this.crypto.decryptBytes(cipher);
+      signal.throwIfAborted();
       const blob = new Blob([buffer], { type: 'image/jpeg' });
       const url = URL.createObjectURL(blob);
       this.thumbs.set(memo.id, { url, size: blob.size });
@@ -78,6 +82,8 @@ export class MediaManager {
 
   // 拉取并解密完整内容，返回 { blob, url, bytes }
   async content(memo, mime, { signal, onProgress } = {}) {
+    signal = signal ? AbortSignal.any([signal, this.lifecycle.signal]) : this.lifecycle.signal;
+    signal.throwIfAborted();
     const hit = this.full.get(memo.id);
     if (hit) return hit;
     if (this.fullPending.has(memo.id)) return this.fullPending.get(memo.id);
@@ -87,6 +93,7 @@ export class MediaManager {
       for (let i = 0; i < memo.parts; i++) {
         const cipher = await fetchCipher(`/api/user/memos/${memo.id}/content?part=${i}`, signal);
         const { buffer } = await this.crypto.decryptBytes(cipher);
+        signal.throwIfAborted();
         parts.push(buffer);
         total += buffer.byteLength;
         onProgress?.((i + 1) / memo.parts);
@@ -102,11 +109,13 @@ export class MediaManager {
   }
 
   async text(memo, { signal } = {}) {
-    const cipher = await fetchCipher(`/api/user/memos/${memo.id}/content?part=0`, signal);
-    const { text } = await this.crypto.decryptText(cipher);
+    const { blob } = await this.content(memo, 'text/plain;charset=utf-8', { signal });
+    const text = await blob.text();
+    this.lifecycle.signal.throwIfAborted();
+    signal?.throwIfAborted();
     return text;
   }
 
   release(memoId) { this.full.delete(memoId); }
-  clear() { this.thumbs.clear(); this.full.clear(); }
+  clear() { this.lifecycle.abort(); this.thumbs.clear(); this.full.clear(); this.thumbPending.clear(); this.fullPending.clear(); }
 }

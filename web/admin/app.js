@@ -703,7 +703,7 @@ async function renderDomain(page) {
           (() => { const sel = h('select', { class: 'tf-input' }, ...[['cf-connecting-ip', 'CF-Connecting-IP（Cloudflare）'], ['x-forwarded-for', 'X-Forwarded-For（首个 IP）'], ['x-real-ip', 'X-Real-IP'], ['true-client-ip', 'True-Client-IP']].map(([v, l]) => h('option', { value: v, selected: f.realIpHeader === v }, l))); sel.addEventListener('change', () => { f.realIpHeader = sel.value; }); return sel; })(),
           h('span', { class: 'tf-label' }, '真实访客 IP 头'))),
         f.cdn === 'cloudflare' ? h('div', { class: 'settings-row', style: { padding: '8px 0' } },
-          h('div', { class: 's-content' }, h('div', { class: 's-title' }, '仅允许 Cloudflare IP 回源'), h('div', { class: 's-sub' }, '防火墙只放行 CF 节点，防止绕过 CDN 直连源站')),
+          h('div', { class: 's-content' }, h('div', { class: 's-title' }, '仅允许 Cloudflare IP 回源'), h('div', { class: 's-sub' }, '反向代理仅放行 CF 节点；安装器已设置的 UFW 限制需通过 SSH 调整')),
           (() => { const sw = h('input', { type: 'checkbox', checked: f.cfOnly }); sw.addEventListener('change', () => { f.cfOnly = sw.checked; }); return h('label', { class: 'switch' }, sw, h('span', { class: 'switch-track' }, h('span', { class: 'switch-thumb' }))); })()) : null,
       ) : h('p', { class: 'muted md-body-m' }, "直连模式由 Caddy 自动申请 Let's Encrypt 证书（需域名解析到本机且开放 80/443）。"));
     // 证书 panel（仅 CDN）

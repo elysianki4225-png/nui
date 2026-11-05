@@ -36,7 +36,7 @@ export function createApi(ctx) {
     return m ? m[1].trim() : null;
   }
   function getUser(req) {
-    const token = parseCookies(req)[USER_COOKIE] || bearerToken(req);
+    const token = bearerToken(req) || parseCookies(req)[USER_COOKIE];
     const s = sessions.get(token, 'user');
     if (!s) return null;
     const u = store.state.users[s.account];
@@ -44,7 +44,7 @@ export function createApi(ctx) {
     return { user: u, session: s, token };
   }
   function getAdmin(req) {
-    const token = parseCookies(req)[ADMIN_COOKIE] || bearerToken(req);
+    const token = bearerToken(req) || parseCookies(req)[ADMIN_COOKIE];
     const s = sessions.get(token, 'admin');
     if (!s) return null;
     return { session: s, token };
@@ -178,8 +178,11 @@ export function createApi(ctx) {
     const password = String(body.password || '');
     if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw new HttpError(400, '用户名需为 3-32 位字母、数字、_ . -', 'BAD_USERNAME');
     if (password.length < 8 || password.length > 128) throw new HttpError(400, '密码长度需为 8-128 位', 'BAD_PASSWORD');
+    // Reading the body yields: another setup request may have completed meanwhile.
+    if (store.state.admin) throw new HttpError(409, '管理员已初始化', 'ALREADY_SETUP');
     const admin = { username, passHash: hashSecret(password), createdAt: nowSec() };
     store.log({ t: 'admin.set', admin });
+    await store.flushDurable();
     const ttl = store.state.settings.adminSessionHours * 3600;
     const { token } = sessions.create('admin', null, ttl, { ip });
     setCookie(res, ADMIN_COOKIE, token, { ...cookieOpts(req), maxAge: ttl });
@@ -230,7 +233,8 @@ export function createApi(ctx) {
       const m = pathname.match(r.regex);
       if (!m) continue;
       const params = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      // HTTP entrypoint already decodes pathname exactly once.
+      r.keys.forEach((k, i) => { params[k] = m[i + 1]; });
       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
       const storageControl = pathname.startsWith('/api/admin/storage/');
       const authOnly = /\/(login|logout)$/.test(pathname);
@@ -243,6 +247,7 @@ export function createApi(ctx) {
         if (result !== undefined && !res.writableEnded) sendJson(res, 200, result);
       } catch (e) {
         if (res.writableEnded) return;
+        if (res.headersSent) { res.destroy(); return; }
         const status = e.status || 500;
         if (status >= 500) console.error(`[api] ${method} ${pathname}:`, e);
         sendError(res, status, e.message || '服务器内部错误', e.code);
