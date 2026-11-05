@@ -1,3 +1,4 @@
+import { profileDTO } from './profile.js';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,7 +18,7 @@ function normOrigin(o) {
 
 function userDTO(u, store) {
   return {
-    account: u.account, createdAt: u.createdAt, lastSeen: u.lastSeen, banned: !!u.banned,
+    profile: profileDTO(u), account: u.account, createdAt: u.createdAt, lastSeen: u.lastSeen, banned: !!u.banned,
     stats: store.userStats(u.account),
   };
 }
@@ -83,7 +84,7 @@ export function registerAdminRoutes(h, ctx) {
     const limit = clampInt(url.searchParams.get('limit'), 1, 200, 50);
     const offset = clampInt(url.searchParams.get('offset'), 0, 1e9, 0);
     let users = Object.values(store.state.users);
-    if (query) users = users.filter((u) => u.account.includes(query.replace(/\D/g, '')));
+    if (query) users = users.filter((u) => u.account.includes(query) || (u.nickname || '').toLowerCase().includes(query.toLowerCase()));
     if (filter === 'banned') users = users.filter((u) => u.banned);
     if (filter === 'active') users = users.filter((u) => !u.banned);
     users.sort((a, b) => b.createdAt - a.createdAt);
@@ -117,6 +118,7 @@ export function registerAdminRoutes(h, ctx) {
           for (const p of m.parts || []) pool.deleteMessage(p.botId, p.messageId);
           if (m.thumb) pool.deleteMessage(m.thumb.botId, m.thumb.messageId);
         }
+        if (u.avatar) pool.deleteMessage(u.avatar.botId, u.avatar.messageId).catch(() => {});
         store.log({ t: 'user.delete', account });
         ctx.sessions.deleteForAccount(account);
         affected++;

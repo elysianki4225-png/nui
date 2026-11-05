@@ -295,7 +295,7 @@ async function renderUsers(page) {
     const check = h('input', { type: 'checkbox', checked: userState.selected.has(u.account), onChange: () => { toggle(u.account); } });
     return h('tr', { class: userState.selected.has(u.account) ? 'selected' : '' },
       h('td', {}, h('label', { class: 'check' }, check, h('span', { class: 'check-box' }, icon('check')))),
-      h('td', {}, h('span', { class: 'mono' }, formatAccount(u.account))),
+      h('td', {}, h('span', { class: 'mono' }, formatAccount(u.account)), publicProfile(u)),
       h('td', {}, String(u.stats.count)),
       h('td', {}, formatBytes(u.stats.bytes)),
       h('td', { class: 'muted' }, formatDate(u.createdAt)),
@@ -307,7 +307,7 @@ async function renderUsers(page) {
     const check = h('input', { type: 'checkbox', checked: userState.selected.has(u.account), onChange: () => toggle(u.account) });
     return h('div', { class: 'm-card' },
       h('div', { class: 'm-row' }, h('label', { class: 'check' }, check, h('span', { class: 'check-box' }, icon('check'))),
-        h('div', { class: 'flex-1' }, h('div', { class: 'mono md-title-s' }, formatAccount(u.account)),
+        h('div', { class: 'flex-1' }, h('div', { class: 'mono md-title-s' }, formatAccount(u.account)), publicProfile(u),
           h('div', { class: 'muted md-body-s' }, `${u.stats.count} 条 · ${formatBytes(u.stats.bytes)} · ${formatRelative(u.lastSeen)}`)),
         u.banned ? h('span', { class: 'badge' }, '封禁') : h('span', { class: 'badge success' }, '正常')),
       h('div', { class: 'm-actions' }, userActions(u)));
@@ -1037,4 +1037,11 @@ async function renderAudit(page) {
   page.querySelector('.empty-state')?.remove();
   if (!data.items.length) { panel.append(h('p', { class: 'muted' }, '暂无审计记录')); return; }
   for (const a of data.items) panel.append(auditRow(a));
+}
+
+function publicProfile(user) {
+  const p = user.profile;
+  if (!p?.nickname) return null;
+  return h('div', { class: 'public-profile' }, p.avatar ? h('img', { src: p.avatar, alt: '头像', class: 'profile-avatar', loading: 'lazy' }) : null,
+    h('div', {}, h('strong', {}, p.nickname), h('p', { class: 'muted md-body-s' }, p.bio || '暂无简介')));
 }

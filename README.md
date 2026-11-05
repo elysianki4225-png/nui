@@ -396,3 +396,18 @@ nui/
 npm install --prefix /tmp/nui-ui-test jsdom@24
 NUI_JSDOM_MODULE=/tmp/nui-ui-test/node_modules/jsdom node test/domain-ui.cjs
 ```
+
+### 记住登录与公开资料（v1.4.0）
+
+- 登录页或「设置 → 外观与安全」可开启“记住账号与密钥”，默认关闭。凭据保存在当前站点的浏览器 localStorage，不上传服务器；重新打开可自动登录。仅适用于私人设备，本机使用者、恶意扩展或站点脚本漏洞可能读取它。换浏览器、换站点或清除网站数据后需重新输入，请自行备份密钥。
+- 设置中可随时关闭、复制账号或确认后复制密钥。退出、手动锁定和自动锁定均清除已记住的凭据，防止刷新绕过锁定。
+- 「设置 → 公开资料」支持唯一网名（2–24 个文字/数字/下划线/短横线）、280 字简介，以及头像上传/移除。网名按 NFKC 与大小写归一化检查唯一性，可修改，修改后旧网名释放。
+- 头像在浏览器裁剪为 256×256 JPEG，最大上传 128KB；原图限 JPEG/PNG/WebP、5MB。头像以独立服务端密钥加密后存 Telegram，VPS 仅中转解密，不落图片磁盘。公开资料不是端到端私密数据，管理员可见；此密钥与用户备忘录密钥无关。
+- 管理端用户列表展示头像、网名、简介，可按网名搜索。公开接口 `GET /api/profiles/:nickname` 返回公开资料，不含登录账号、认证证明或存储密钥；头像经 `/api/avatars/:nickname` 中转。封禁或删除账号后资料不再公开。
+- GitHub Pages 等静态导出需重新从更新后的管理端导出并替换 `index.html`，后端也必须更新，才能使用新接口和本次 UI 修复。
+
+用户界面交互回归：
+```bash
+npm install --prefix /tmp/nui-ui-test jsdom@24
+NUI_JSDOM_MODULE=/tmp/nui-ui-test/node_modules/jsdom node test/user-ui.cjs
+```

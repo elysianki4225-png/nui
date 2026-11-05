@@ -130,6 +130,33 @@ async function main() {
     const account = r.data.account;
     const encKey = await deriveEncKey(master, account);
 
+    console.log('\n[公开资料]');
+    r = await anon('PATCH', '/api/user/profile', { nickname: 'TestUser', bio: '' });
+    ok(r.status === 401, '未登录不能修改资料');
+    r = await user('PATCH', '/api/user/profile', { nickname: 'TestUser', bio: '公开简介' });
+    ok(r.status === 200 && r.data.profile.bio === '公开简介', '保存公开资料');
+    r = await anon('GET', '/api/profiles/testuser');
+    ok(r.status === 200 && !r.data.profile.account && !r.data.profile.proofHash, '公开资料不泄漏账号或认证信息');
+    r = await user('PATCH', '/api/user/profile', { nickname: '<script>', bio: '' });
+    ok(r.status === 400, '拒绝非法网名');
+    const other = makeClient();
+    await other('POST', '/api/user/register', { proof: await deriveProof(crypto.getRandomValues(new Uint8Array(32))) });
+    r = await other('PATCH', '/api/user/profile', { nickname: 'ＴＥＳＴＵＳＥＲ', bio: '' });
+    ok(r.status === 409, '大小写和全角归一化后网名仍唯一');
+    const otherMe = await other('GET', '/api/user/me');
+    await admin('POST', '/api/admin/users/batch', { action: 'delete', accounts: [otherMe.data.account] });
+    const avatarBytes = Buffer.from([255, 216, 255, 224, 0, 2, 255, 217]);
+    r = await user('PUT', '/api/user/profile/avatar', avatarBytes, true);
+    ok(r.status === 200 && r.data.profile.avatar, '公开头像加密上传到 Telegram');
+    r = await anon('GET', '/api/avatars/testuser');
+    ok(r.status === 200 && r.buf.equals(avatarBytes), '头像经 VPS 解密中转，不暴露 Telegram URL');
+    r = await admin('GET', '/api/admin/users?query=TestUser');
+    ok(r.data.items[0]?.profile.bio === '公开简介' && !JSON.stringify(r.data).includes('fileId'), '管理员可搜索网名查看公开资料，无存储密钥');
+    r = await user('DELETE', '/api/user/profile/avatar');
+    ok(r.status === 200, '可移除头像');
+    r = await anon('GET', '/api/avatars/testuser');
+    ok(r.status === 404, '移除后不再公开头像');
+
     console.log('\n[5] 创建加密文本备忘录');
     const text = '这是一条端到端加密的备忘录。\n第二行内容，管理员无法看到。';
     const meta = await encryptMeta(encKey, { title: '测试备忘录', preview: text.slice(0, 40) });
