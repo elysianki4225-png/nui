@@ -6,6 +6,14 @@
 
 已完成可执行范围内的全量回归和重点代码审查，发现的问题已修复并新增回归测试。**“通过验收”不等于证明不存在任何缺陷**。真实 VPS 的系统服务、防火墙、ACME 证书、Cloudflare 控制台及 Telegram 平台权限/限流，仍须部署环境验收，见下方边界。
 
+## 本次截图故障复核（发布前再次验证）
+
+截图的 `EACCES /etc/nui-memo/config.json` 已确认对应权限回归：root 原子替换配置时丢失服务组；旧安装更新路径未修正权限；root SSH 改密还可能留下 root:root 的 0600 快照。现在原子写入及失败回滚保留属主/属组，安装、升级、SSH 启动/重启修复存量权限，SSH 改密以服务账号运行。
+
+新增 `test/permissions.sh` 使用真实 Linux root/低权限账号：配置原为 root-only，修复后 nui-memo 可读而其他账号不可读；配置目录允许独立的 Caddy 证书读取者遍历；域名改写不丢组；旧 root 快照修复不改内容；SSH 改密不再制造 root 快照；失败启动返回非零；最终真实低权限后端通过 HTTP health。systemctl 操作仍为 stub，非声称连接了用户 VPS。
+
+当前轮重新运行下表所有自动化套件及真实 Chromium；新增可复现 `test/browser-release.mjs` 验证 11 个管理页面、GIF 原生 Worker 上传、四种视口、注册/HKDF/AES-GCM/用户 Worker 解密、记住登录与重复筛选。
+
 ## 功能覆盖与结果
 
 | 范围 | 验证方式及结果 |
@@ -41,6 +49,8 @@
 10. 媒体请求在清理后迟到建立新 Blob URL、长文字只读第一块、图片查看器传递 Promise 而不是 Blob、批量超过 1000 条只处理一部分；均已修复。
 11. 锁定时私密编辑弹窗/菜单可能残留，以及详情返回按钮缺可访问名称；锁定现在关闭覆盖层并清理监听器，补上返回标签。
 12. 重复 URL 解码导致百分号路径产生 500；静态流与 API 中途断开时重复写响应头；已修正。
+13. 域名原子改写和回滚保留文件 uid/gid/mode；存量配置及 root CLI 快照恢复服务权限，Caddy 仍可读取独立保护的 Origin key。
+14. SSH 启动失败不再返回成功退出码；改密必须先成功停止服务，并以 nui-memo 账号执行。
 
 ## 发布边界与部署注意
 
@@ -67,3 +77,25 @@ bash scripts/check-release.sh
 ```
 
 `.github/workflows/verify.yml` 对 PR 和 main 执行同一回归，并验证已提交浏览器构建产物可重现。
+
+
+## 修复已有 EACCES 安装并固定升级到本次发布
+
+先备份 `/etc/nui-memo` 和数据目录。下载新版安装器，不依赖机器上的旧安装脚本：
+
+```bash
+curl -fL https://github.com/elysianki4225-png/nui/releases/download/v2.0.0/install.sh -o /tmp/nui-install-2.0.0.sh
+sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
+```
+
+安装器读取实际配置中的 dataDir 修复权限；保留配置、数据库、域名和证书。不使用 `chmod 777` 或把配置设为全局可读。若需先恢复标准安装的配置读取，可临时执行：
+
+```bash
+sudo chown root:nui-memo /etc/nui-memo/config.json
+sudo chmod 0640 /etc/nui-memo/config.json
+sudo chmod 0755 /etc/nui-memo
+sudo systemctl reset-failed nui-memo
+sudo systemctl restart nui-memo
+```
+
+临时命令不替代升级，否则旧版域名改写仍可能再次丢失文件组。真实 VPS 上需确认 `systemctl is-active nui-memo caddy`、管理页登录及用户页读取成功。

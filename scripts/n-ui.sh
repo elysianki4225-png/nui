@@ -55,9 +55,16 @@ do_status() {
   [[ -n "${ver:-}" ]] || true
 }
 
-do_start()  { need_root || return; svc start  && ok "已启动 $SERVICE" || err "启动失败"; }
-do_stop()   { need_root || return; svc stop   && ok "已停止 $SERVICE" || err "停止失败"; }
-do_restart(){ need_root || return; svc restart && ok "已重启 $SERVICE" || err "重启失败"; }
+repair_permissions() {
+  local helper="$APP_DIR/scripts/repair-permissions.sh"
+  [[ -f "$helper" ]] || { err "缺少权限修复脚本，请先更新完整程序"; return 1; }
+  source "$helper"
+  nui_repair_permissions "$CONF_FILE" "$NODE_BIN"
+}
+
+do_start()  { need_root || return; repair_permissions || return; svc start  && ok "已启动 $SERVICE" || { err "启动失败"; return 1; }; }
+do_stop()   { need_root || return; svc stop   && ok "已停止 $SERVICE" || { err "停止失败"; return 1; }; }
+do_restart(){ need_root || return; repair_permissions || return; svc restart && ok "已重启 $SERVICE" || { err "重启失败"; return 1; }; }
 
 do_logs() {
   say "${D}显示最近 50 行日志（Ctrl+C 退出实时模式）${R}"
@@ -76,13 +83,15 @@ do_reset() {
   if [[ "$pass" != "$pass2" ]]; then err "两次密码不一致"; return; fi
   if [[ ${#pass} -lt 8 || ${#pass} -gt 128 ]]; then err "密码长度需为 8-128 位"; return; fi
   say "将短暂停止服务以写入新凭据…"
-  systemctl stop "$SERVICE" 2>/dev/null || true
-  if NUI_NEW_PASS="$pass" NUI_NEW_USER="$user" "$NODE_BIN" "$APP_DIR/server/cli.js" reset-admin; then
+  repair_permissions || return
+  systemctl stop "$SERVICE" 2>/dev/null || { err "停止服务失败，取消改密以避免并发写入"; return 1; }
+  if MEMO_CONFIG="$CONF_FILE" NUI_NEW_PASS="$pass" NUI_NEW_USER="$user" runuser -u nui-memo -- "$NODE_BIN" "$APP_DIR/server/cli.js" reset-admin; then
     ok "管理员凭据已更新，所有管理员会话已失效"
   else
     err "更新失败"
   fi
-  systemctl start "$SERVICE" 2>/dev/null || true
+  repair_permissions || return
+  systemctl start "$SERVICE" 2>/dev/null || { err "服务重启失败，请检查日志"; return 1; }
 }
 
 confirm() {
@@ -157,9 +166,9 @@ main_loop() {
 # 支持非交互直跑: n-ui status|start|stop|restart|logs
 case "${1:-}" in
   status) do_status; exit 0;;
-  start) do_start; exit 0;;
-  stop) do_stop; exit 0;;
-  restart) do_restart; exit 0;;
+  start) do_start; exit $?;;
+  stop) do_stop; exit $?;;
+  restart) do_restart; exit $?;;
   logs) do_logs "${2:-}"; exit 0;;
   "") main_loop;;
   *) main_loop;;

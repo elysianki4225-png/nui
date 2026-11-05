@@ -29,7 +29,8 @@ set -euo pipefail
 NODE_VERSION="v22.15.0"
 CADDY_VERSION="2.9.1"
 REPO="elysianki4225-png/nui"
-REPO_BRANCH="main"
+REPO_BRANCH="${NUI_BRANCH:-main}"
+REPO_REF="${NUI_REF:-refs/heads/${REPO_BRANCH}}"
 APP_DIR="/opt/nui-memo"
 DATA_DIR="/var/lib/nui-memo"
 CONF_DIR="/etc/nui-memo"
@@ -407,7 +408,7 @@ fetch_app() {
     info "使用本地仓库文件: $src"
   else
     local tmp; tmp="$(mktemp -d)"
-    local url="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${REPO_BRANCH}"
+    local url="https://codeload.github.com/${REPO}/tar.gz/${REPO_REF}"
     info "下载程序: $url"
     curl -fL --retry 2 --connect-timeout 15 --max-time 300 -o "$tmp/app.tar.gz" "$url" || die "程序下载失败"
     tar -xzf "$tmp/app.tar.gz" -C "$tmp"
@@ -434,6 +435,13 @@ fetch_app() {
   [[ -f "$src/install.sh" ]] && cp "$src/install.sh" "$APP_DIR/install.sh"
   [[ -n "${FETCH_TMP:-}" ]] && rm -rf "$FETCH_TMP"
   ok "程序已部署到 $APP_DIR"
+}
+
+repair_permissions() {
+  local helper="$APP_DIR/scripts/repair-permissions.sh"
+  [[ -f "$helper" ]] || die "缺少权限修复脚本，请使用完整新版安装器更新"
+  source "$helper"
+  nui_repair_permissions "$CONF_FILE" "$APP_DIR/node/bin/node" || die "权限修复失败，未启动服务"
 }
 
 # ---------- 配置 ----------
@@ -489,10 +497,7 @@ EOF
     ' "$CONF_FILE"
     ok "配置已更新（保留数据与机器人绑定）"
   fi
-  id nui-memo >/dev/null 2>&1 || useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin nui-memo
-  chown -R nui-memo:nui-memo "$DATA_DIR"
-  chmod 750 "$DATA_DIR"
-  chgrp nui-memo "$CONF_FILE" 2>/dev/null || true
+  repair_permissions
 }
 
 # ---------- Caddyfile ----------
@@ -804,6 +809,7 @@ main() {
   if [[ $DO_UPDATE -eq 1 && -f "$CONF_FILE" ]]; then
     BACKEND_PORT="$("$APP_DIR/node/bin/node" -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).port||8787)' "$CONF_FILE")"
     fetch_app
+    repair_permissions
     start_services
     install_panel
     health_check
