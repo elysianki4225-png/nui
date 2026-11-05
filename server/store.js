@@ -22,6 +22,14 @@ function defaultState() {
       adminSessionHours: 12,
       autoLockMinutes: 30,
       motd: '',
+      // 跨域 / 前端部署
+      corsMode: 'off',          // off | whitelist | open
+      corsOrigins: [],          // 允许的前端 Origin 列表
+      // 广告
+      adsEnabled: false,
+      adsMode: 'custom',        // custom | html
+      adsHtml: '',              // 任意广告网络代码（AdSense 等）
+      adsItems: [],             // 自有广告 [{id,title,image,url,enabled}]
     },
     audit: [],
     stats: { createdAt: nowSec() },

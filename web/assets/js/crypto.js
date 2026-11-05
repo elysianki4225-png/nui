@@ -45,6 +45,11 @@ export function parseKey(input) {
 
 export class CryptoClient {
   constructor(workerUrl = '/app/worker.js') {
+    // 导出单文件模式：worker 代码已内联为字符串，用 Blob 启动
+    if (typeof window !== 'undefined' && window.__MEMO_WORKER__) {
+      const blob = new Blob([window.__MEMO_WORKER__], { type: 'text/javascript' });
+      workerUrl = URL.createObjectURL(blob);
+    }
     this.worker = new Worker(workerUrl);
     this.seq = 0;
     this.pending = new Map();

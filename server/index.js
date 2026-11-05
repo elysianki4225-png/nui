@@ -39,11 +39,12 @@ function securityHeaders(req, res) {
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' blob: data:",
+    "img-src 'self' blob: data: https:",
     "media-src 'self' blob:",
-    "font-src 'self'",
-    "connect-src 'self'",
+    "font-src 'self' data:",
+    "connect-src 'self' https:",
     "worker-src 'self' blob:",
+    "frame-src 'self' data: blob:",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -54,9 +55,37 @@ function securityHeaders(req, res) {
   if (isHttps(req, cfg) && !behindCdn(cfg)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 }
 
+// ---------- CORS（前端跨域白名单 / 开关） ----------
+function normOrigin(o) {
+  try { const u = new URL(o); return `${u.protocol}//${u.host}`.toLowerCase(); } catch { return null; }
+}
+function corsAllowed(origin) {
+  const s = store.state.settings;
+  const mode = s.corsMode || 'off';
+  if (mode === 'off' || !origin) return false;
+  const o = normOrigin(origin);
+  if (!o) return false;
+  if (mode === 'open') return true;
+  const own = [cfg.userHost, cfg.adminHost].filter(Boolean).map((h) => `https://${h}`.toLowerCase());
+  if (own.includes(o)) return true;
+  return (s.corsOrigins || []).some((x) => normOrigin(x) === o);
+}
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (!corsAllowed(origin)) return false;
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Memo-Client, Authorization');
+  res.setHeader('Access-Control-Max-Age', '600');
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
   const ip = clientIp(req, cfg);
   securityHeaders(req, res);
+  if (applyCors(req, res)) return; // 预检已响应
   let pathname;
   try {
     pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);

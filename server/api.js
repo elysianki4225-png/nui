@@ -8,6 +8,13 @@ export { VERSION };
 const USER_COOKIE = 'memo_session';
 const ADMIN_COOKIE = 'memo_admin';
 
+// 公开广告配置（不含管理字段）
+export function publicAds(s) {
+  if (!s.adsEnabled) return { enabled: false };
+  if (s.adsMode === 'html') return { enabled: true, mode: 'html', html: s.adsHtml || '' };
+  return { enabled: true, mode: 'custom', items: (s.adsItems || []).filter((i) => i.enabled).map((i) => ({ id: i.id, title: i.title, image: i.image, url: i.url })) };
+}
+
 export function createApi(ctx) {
   const { cfg, store, sessions, pool, limiter } = ctx;
   const routes = [];
@@ -21,8 +28,13 @@ export function createApi(ctx) {
   function cookieOpts(req) {
     return { secure: isHttps(req, cfg) || !cfg.dev, httpOnly: true, sameSite: 'Strict', path: '/' };
   }
+  function bearerToken(req) {
+    const h = req.headers.authorization || '';
+    const m = /^Bearer\s+(.+)$/i.exec(h);
+    return m ? m[1].trim() : null;
+  }
   function getUser(req) {
-    const token = parseCookies(req)[USER_COOKIE];
+    const token = parseCookies(req)[USER_COOKIE] || bearerToken(req);
     const s = sessions.get(token, 'user');
     if (!s) return null;
     const u = store.state.users[s.account];
@@ -30,7 +42,7 @@ export function createApi(ctx) {
     return { user: u, session: s, token };
   }
   function getAdmin(req) {
-    const token = parseCookies(req)[ADMIN_COOKIE];
+    const token = parseCookies(req)[ADMIN_COOKIE] || bearerToken(req);
     const s = sessions.get(token, 'admin');
     if (!s) return null;
     return { session: s, token };
@@ -47,10 +59,23 @@ export function createApi(ctx) {
     if (!a) throw new HttpError(401, '管理员未登录', 'UNAUTHORIZED');
     return a;
   }
+  function corsAllowsOrigin(origin) {
+    const s = store.state.settings;
+    const mode = s.corsMode || 'off';
+    if (mode === 'off' || !origin) return false;
+    let o; try { o = new URL(origin); } catch { return false; }
+    const norm = `${o.protocol}//${o.host}`.toLowerCase();
+    if (mode === 'open') return true;
+    return (s.corsOrigins || []).some((x) => { try { const u = new URL(x); return `${u.protocol}//${u.host}`.toLowerCase() === norm; } catch { return false; } });
+  }
   function csrfCheck(req) {
     if (!req.headers['x-memo-client']) throw new HttpError(403, '缺少客户端标识', 'CSRF');
+    // Bearer token 不会被浏览器自动附带，跨域外部前端无 CSRF 风险（CORS 白名单另行控制）
+    if (bearerToken(req)) return;
     const origin = req.headers.origin;
     if (origin) {
+      // 已加入跨域白名单 / 开放模式的前端 Origin 放行
+      if (corsAllowsOrigin(origin)) return;
       try {
         const o = new URL(origin);
         const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
@@ -79,6 +104,7 @@ export function createApi(ctx) {
     motd: store.state.settings.motd || '',
     version: VERSION,
     storageReady: pool.bots().length > 0,
+    ads: publicAds(store.state.settings),
   }));
 
   // ---------- 用户注册 / 登录 ----------
@@ -100,7 +126,7 @@ export function createApi(ctx) {
     const { token } = sessions.create('user', account, ttl, { ip });
     setCookie(res, USER_COOKIE, token, { ...cookieOpts(req), maxAge: ttl });
     store.audit(account, 'user.register', `新账号注册`);
-    return { ok: true, account, createdAt: user.createdAt };
+    return { ok: true, account, createdAt: user.createdAt, token };
   });
 
   route('POST', '/api/user/login', async (req, res, params, ip) => {
@@ -119,7 +145,7 @@ export function createApi(ctx) {
     const ttl = store.state.settings.userSessionDays * 86400;
     const { token } = sessions.create('user', account, ttl, { ip });
     setCookie(res, USER_COOKIE, token, { ...cookieOpts(req), maxAge: ttl });
-    return { ok: true, account, createdAt: user.createdAt };
+    return { ok: true, account, createdAt: user.createdAt, token };
   });
 
   route('POST', '/api/user/logout', async (req, res) => {

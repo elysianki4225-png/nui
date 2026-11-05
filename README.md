@@ -178,6 +178,34 @@ sudo bash install.sh --domain m.example.com --cloudflare --cf-only ...
 - **移动（<840px）**：汉堡按钮 + **M3 侧边抽屉**导航（不再用会溢出的底部导航），表格自动切换为卡片，表单/分段按钮自适应窄屏，杜绝横向溢出。
 - 亮 / 暗主题、涟漪与动效遵循 Material Design 3，并支持 `prefers-reduced-motion`。
 - 注册 / 登录 / 密钥展示在窄屏下自动收紧边距与字号，长密钥自动换行，可复制 / 下载。
+- 图标尺寸与容器严格匹配（按钮 / 输入框 / 抽屉 / 菜单 / 徽标），小图标不再超出边界；分段按钮改用中等圆角，视觉更稳重。
+
+---
+
+## 前端导出与跨域（GitHub Pages 等静态托管）
+
+管理面板「前端 / 跨域」页：
+
+- **跨域开关**：`关闭跨域`（默认，仅同域）/ `白名单` / `允许所有`。白名单支持**批量添加 / 移除** Origin（如 `https://name.github.io`）。
+- **导出单文件前端**：一键下载 `index.html`，内联全部样式 / 脚本 / 图标 / 加密 Worker，并**自动写入 API 地址**（你的用户域名），部署到 GitHub Pages 后开箱即用，无需手动改代码。
+- 外部前端使用 **Bearer token** 鉴权（登录 / 注册返回 token，存于 localStorage），不依赖跨站 Cookie；服务端对已加白名单的 Origin 放行 CORS 与 CSRF。
+- 重新构建导出模板：`npm i -D esbuild && npm run build:export`（运行时仍零依赖）。
+
+```bash
+# 部署到 GitHub Pages：把导出的 index.html 推送到仓库即可
+# 然后在管理面板把 https://<user>.github.io 加入跨域白名单
+```
+
+---
+
+## 广告投放
+
+管理面板「广告」页：
+
+- **投放开关**：一键开启 / 关闭，关闭后用户端不展示任何广告。
+- **自有广告**：批量管理图片 + 链接卡片（标题 / 图片 URL / 跳转链接，可单独启用 / 删除）。
+- **广告网络**：粘贴 AdSense 等网络的 HTML/JS 代码，在**沙箱 iframe** 中渲染，与主应用隔离。
+- 广告配置通过公开 `/api/config` 下发，用户端在备忘录列表上方展示广告位。
 
 ---
 
@@ -279,6 +307,8 @@ node test/smoke.mjs
 # Cloudflare 后端行为测试（真实 IP / Secure Cookie / HSTS / 封禁）
 node test/cloudflare.mjs
 
+# 跨域 / Bearer 外部前端 / 广告 / 单文件导出测试
+node test/frontend-deploy.mjs
 # 域名 / CDN 管理测试（校验 / Caddyfile / 特权应用 / API 热切换 / 重启持久化）
 node test/domain.mjs
 

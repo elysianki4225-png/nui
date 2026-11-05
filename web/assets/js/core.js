@@ -1,5 +1,10 @@
 // 共享前端核心：DOM 构建、主题、涟漪、Snackbar、对话框、菜单、API 客户端、工具函数
 
+// 导出单文件模式：window.__MEMO_CONFIG__ 由管理端导出时注入（apiBase 等）
+const EXT = (typeof window !== 'undefined' && window.__MEMO_CONFIG__) || null;
+export const IS_EXPORT = !!EXT;
+export const API_BASE = EXT ? String(EXT.apiBase || '').replace(/\/+$/, '') : '';
+
 // ---------- DOM ----------
 export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
@@ -27,6 +32,7 @@ export function clear(el) { while (el.firstChild) el.removeChild(el.firstChild);
 let spriteReady = null;
 export function loadSprite() {
   if (spriteReady) return spriteReady;
+  if (IS_EXPORT) { spriteReady = Promise.resolve(); return spriteReady; } // 导出文件已内联图标
   spriteReady = fetch('/assets/icons.svg').then((r) => r.text()).then((svg) => {
     const div = h('div', { html: svg, style: { display: 'none' }, 'aria-hidden': 'true' });
     document.body.prepend(div);
@@ -203,16 +209,22 @@ export class ApiError extends Error {
 }
 export async function api(method, path, body, { raw = false, signal } = {}) {
   const headers = { 'X-Memo-Client': 'web' };
+  if (IS_EXPORT) {
+    const t = localStorage.getItem('memo-token');
+    if (t) headers.Authorization = `Bearer ${t}`;
+  }
   let payload;
   if (body !== undefined) {
     if (raw) { payload = body; headers['Content-Type'] = 'application/octet-stream'; }
     else { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
   }
-  const res = await fetch(path, { method, headers, body: payload, credentials: 'same-origin', signal });
+  const res = await fetch(API_BASE + path, { method, headers, body: payload, credentials: IS_EXPORT ? 'omit' : 'same-origin', signal });
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('application/json')) {
     const data = await res.json();
     if (!res.ok || data.ok === false) throw new ApiError(res.status, data.error || `请求失败 (${res.status})`, data.code);
+    if (data.token) { try { localStorage.setItem('memo-token', data.token); } catch {} }
+    if (/\/(logout|delete-account)$/.test(path)) { try { localStorage.removeItem('memo-token'); } catch {} }
     return data;
   }
   if (!res.ok) throw new ApiError(res.status, `请求失败 (${res.status})`);
