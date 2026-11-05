@@ -4,6 +4,7 @@
 //   node domain.js apply --request f    # 读取请求 JSON，应用域名/证书/Caddy 配置
 import fs from 'node:fs';
 import path from 'node:path';
+import { X509Certificate, createPrivateKey, createPublicKey } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 export const CDN_PROVIDERS = ['none', 'cloudflare', 'custom'];
@@ -22,6 +23,8 @@ export const SYS = {
   caddyFile: process.env.NUI_CADDY_FILE || '/etc/caddy/Caddyfile',
   certFile: process.env.NUI_CF_CERT_FILE || '/etc/nui-memo/cf-origin.pem',
   keyFile: process.env.NUI_CF_KEY_FILE || '/etc/nui-memo/cf-origin.key',
+  adminCertFile: process.env.NUI_ADMIN_CERT_FILE || '/etc/nui-memo/admin-origin.pem',
+  adminKeyFile: process.env.NUI_ADMIN_KEY_FILE || '/etc/nui-memo/admin-origin.key',
   caddyBin: process.env.NUI_CADDY_BIN || '/usr/local/bin/caddy',
   service: process.env.NUI_SERVICE || 'nui-memo',
   caddyService: process.env.NUI_CADDY_SERVICE || 'caddy',
@@ -54,6 +57,7 @@ export function settingsFromCfg(cfg) {
     mode: cfg.mode === 'ip' ? 'ip' : 'domain',
     userHost: (cfg.userHost || '').toLowerCase(),
     adminHost: (cfg.adminHost || '').toLowerCase(),
+    adminOrigin: cfg.adminOrigin || null,
     cdn,
     cdnName: cfg.cdnName || (cdn === 'cloudflare' ? 'Cloudflare' : cdn === 'custom' ? '第三方 CDN' : ''),
     sslMode: cfg.sslMode || (cdn === 'none' ? 'auto' : 'flexible'),
@@ -73,6 +77,7 @@ export function normalizeDomain(input, base = {}) {
   let mode = src.mode === 'ip' ? 'ip' : 'domain';
   const userHost = String(src.userHost || '').trim().toLowerCase();
   let adminHost = String(src.adminHost || '').trim().toLowerCase();
+  if (input?.mode === 'domain' && base.mode === 'ip' && !Object.hasOwn(input,'adminHost')) adminHost = '';
 
   if (!isValidHost(userHost)) throw new Error(`无效域名: ${src.userHost || '(空)'}（需为不含端口/协议的合法主机名）`);
   if (cdn !== 'none' && mode === 'ip') {
@@ -84,9 +89,11 @@ export function normalizeDomain(input, base = {}) {
     if (!adminHost) adminHost = userHost;
     if (!isValidHost(adminHost)) throw new Error(`无效管理子域名: ${src.adminHost}`);
     if (adminHost === userHost) warnings.push('IP 模式下建议用户/管理使用不同子域名。');
-  } else {
-    adminHost = '';
+  } else if (adminHost && !isValidHost(adminHost)) {
+    throw new Error('无效管理域名');
   }
+
+  if (mode === 'domain' && adminHost === userHost) adminHost = '';
 
   let sslMode = SSL_MODES.includes(src.sslMode) ? src.sslMode : (cdn === 'none' ? 'auto' : 'flexible');
   if (cdn === 'none') sslMode = 'auto';
@@ -99,7 +106,8 @@ export function normalizeDomain(input, base = {}) {
   if (cdn === 'none') { cfHttpPort = 80; cfHttpsPort = 443; }
   if (cdn !== 'none' && cfHttpPort === cfHttpsPort) throw new Error('回源 HTTP 与 HTTPS 端口不能相同');
 
-  let realIpHeader = REAL_IP_HEADERS.includes(src.realIpHeader) ? src.realIpHeader : defaultRealIpHeader(cdn);
+  const requestedHeader = input && Object.hasOwn(input,'realIpHeader') ? input.realIpHeader : cdn !== cur.cdn ? defaultRealIpHeader(cdn) : src.realIpHeader;
+  let realIpHeader = REAL_IP_HEADERS.includes(requestedHeader) ? requestedHeader : defaultRealIpHeader(cdn);
   const cdnName = String(src.cdnName || '').slice(0, 40) || (cdn === 'cloudflare' ? 'Cloudflare' : cdn === 'custom' ? '第三方 CDN' : '');
   const cfOnly = !!src.cfOnly;
 
@@ -114,18 +122,32 @@ export function normalizeDomain(input, base = {}) {
   if (cdn !== 'none' && sslMode === 'flexible') warnings.push('Flexible 回源为 HTTP，源站已禁用强制 HTTPS 跳转以避免重定向循环。');
 
   const settings = { mode, userHost, adminHost, cdn, cdnName, sslMode, cfHttpPort, cfHttpsPort, realIpHeader, cfOnly };
+  if (src.adminOrigin != null) {
+    if (!adminHost || adminHost === userHost) throw new Error('独立管理回源需要不同的管理域名');
+    if (typeof src.adminOrigin !== 'object' || Array.isArray(src.adminOrigin)) throw new Error('无效管理回源配置');
+    for (const k of ['cfHttpPort','cfHttpsPort']) if (src.adminOrigin[k] != null && (!Number.isInteger(Number(src.adminOrigin[k])) || Number(src.adminOrigin[k]) < 1 || Number(src.adminOrigin[k]) > 65535)) throw new Error('管理端回源端口必须为 1–65535 的整数');
+    const admin = normalizeDomain({ ...src.adminOrigin, mode:'domain', userHost:adminHost, adminHost:'', adminOrigin:null });
+    settings.adminOrigin = Object.fromEntries(['cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'].map(k=>[k,admin.settings[k]]));
+    warnings.push(...admin.warnings.map(w=>'管理端：'+w));
+  } else settings.adminOrigin = null;
+  if (adminHost && adminHost !== userHost) {
+    const a = settings.adminOrigin || settings;
+    const ports = x => x.cdn === 'none' ? [80,443] : [x.cfHttpPort,x.cfHttpsPort];
+    const [uh,us]=ports(settings),[ah,as]=ports(a);
+    if (uh === as || us === ah) throw new Error('两端 HTTP 与 HTTPS 监听端口冲突，请勿把同一端口同时用于两种协议');
+  }
   return { settings, warnings };
 }
 
 export function domainUrls(s, { dev = false } = {}) {
   const scheme = dev ? 'http' : 'https';
   const userUrl = `${scheme}://${s.userHost}`;
-  const adminUrl = s.mode === 'ip' ? `${scheme}://${s.adminHost || s.userHost}` : `${userUrl}/admin/`;
+  const adminUrl = s.adminHost && s.adminHost !== s.userHost ? `${scheme}://${s.adminHost}` : `${userUrl}/admin/`;
   return { userUrl, adminUrl };
 }
 
 /** 生成 Caddyfile（安装脚本与运行时共用，保证一致） */
-export function buildCaddyfile(s, opts = {}) {
+function buildSingleCaddyfile(s, opts = {}) {
   const backendPort = opts.backendPort || SYS.backendPort;
   const certFile = opts.certFile || SYS.certFile;
   const keyFile = opts.keyFile || SYS.keyFile;
@@ -178,12 +200,40 @@ export function buildCaddyfile(s, opts = {}) {
   return L.join('\n') + '\n';
 }
 
+export function originForRequest(req, cfg) {
+  const host = String(req.headers?.host || '').split(':')[0].toLowerCase();
+  return cfg.adminHost && host === cfg.adminHost && cfg.adminOrigin ? { ...cfg, ...cfg.adminOrigin, cloudflare:cfg.adminOrigin.cdn === 'cloudflare' } : cfg;
+}
+
+export function buildCaddyfile(s, opts = {}) {
+  const endpoints = [{ ...s, mode:'domain', adminHost:'', adminOrigin:null }];
+  if (s.adminHost && s.adminHost !== s.userHost) endpoints.push({ ...s, ...(s.adminOrigin || {}), mode:'domain', userHost:s.adminHost, adminHost:'', adminOrigin:null });
+  const backend = opts.backendPort || SYS.backendPort;
+  for (const e of endpoints) if ((e.cdn === 'none' ? [80,443] : [e.cfHttpPort,e.cfHttpsPort]).includes(backend)) throw new Error('回源监听端口不能占用后端服务端口');
+  if (endpoints.length === 1) return buildSingleCaddyfile(endpoints[0],opts);
+  const mixed = endpoints.some(e=>e.cdn !== 'none');
+  const parts = endpoints.map((e,i)=>{
+    const options = i === 1 && s.adminOrigin ? { ...opts, haveCert:opts.haveAdminCert, certFile:opts.adminCertFile || SYS.adminCertFile, keyFile:opts.adminKeyFile || SYS.adminKeyFile } : opts;
+    const text=buildSingleCaddyfile(e,options);
+    const body=text.slice(text.indexOf('\n}\n')+3);
+    return body + (mixed && e.cdn === 'none' ? `\nhttp://${e.userHost}:80 {\n    redir https://${e.userHost}{uri} 308\n}\n` : '');
+  });
+  return '# 双入口配置：同协议可共享端口，不同协议不能混用\n{\n    admin off\n' + (mixed?'    auto_https disable_redirects\n':'') + '}\n' + parts.join('\n');
+}
+
+function validateOriginCertificate(cert, key, hosts) {
+  const parsed = new X509Certificate(cert);
+  if (Date.parse(parsed.validTo) <= Date.now() || Date.parse(parsed.validFrom) > Date.now()) throw new Error('回源证书未生效或已过期');
+  if (!parsed.publicKey.export({type:'spki',format:'der'}).equals(createPublicKey(createPrivateKey(key)).export({type:'spki',format:'der'}))) throw new Error('回源证书与私钥不匹配');
+  for (const host of hosts) if (!parsed.checkHost(host)) throw new Error(`回源证书不覆盖 ${host}，请配置对应证书`);
+}
+
 /** 把域名设置写入 config.json（保留其它字段） */
 export function mergeConfigFile(confFile, s) {
   let cfg = {};
   try { cfg = JSON.parse(fs.readFileSync(confFile, 'utf8')); } catch { cfg = {}; }
   Object.assign(cfg, {
-    mode: s.mode, userHost: s.userHost, adminHost: s.adminHost,
+    mode: s.mode, userHost: s.userHost, adminHost: s.adminHost, adminOrigin:s.adminOrigin || null,
     cloudflare: s.cdn === 'cloudflare', cdn: s.cdn, cdnName: s.cdnName,
     sslMode: s.sslMode, cfHttpPort: s.cfHttpPort, cfHttpsPort: s.cfHttpsPort,
     realIpHeader: s.realIpHeader, cfOnly: s.cfOnly,
@@ -248,14 +298,16 @@ export function applyRequest(req, { dryRun = false } = {}) {
   const caddyFile = p.caddyFile || SYS.caddyFile;
   const certFile = p.certFile || SYS.certFile;
   const keyFile = p.keyFile || SYS.keyFile;
+  const adminCertFile = p.adminCertFile || SYS.adminCertFile;
+  const adminKeyFile = p.adminKeyFile || SYS.adminKeyFile;
   const dataDir = p.dataDir || SYS.dataDir;
   const backendPort = p.backendPort || SYS.backendPort;
   const caddyBin = p.caddyBin || SYS.caddyBin;
   const result = { id: req.id || null, ok: false, warnings: [], appliedAt: Math.floor(Date.now() / 1000) };
   const writeResult = () => { try { atomicWrite(path.join(dataDir, 'domain-result.json'), JSON.stringify(result, null, 2)); } catch {} };
-  let backups = [], captured = false, reloaded = false;
+  let backups = [], captured = false, reloadAttempted = false;
   try {
-    backups = [confFile, caddyFile, certFile, keyFile, path.join(dataDir, 'domain.json')].map(file => {
+    backups = [confFile, caddyFile, certFile, keyFile, adminCertFile, adminKeyFile, path.join(dataDir, 'domain.json')].map(file => {
       if (!fs.existsSync(file)) return { file, exists: false };
       const stat = fs.statSync(file);
       return { file, exists: true, bytes: fs.readFileSync(file), mode: stat.mode & 0o777, uid: stat.uid, gid: stat.gid };
@@ -268,6 +320,9 @@ export function applyRequest(req, { dryRun = false } = {}) {
     result.settings = settings;
     result.urls = domainUrls(settings);
 
+    // Validate listener topology before writing any files.
+    buildCaddyfile(settings, { backendPort });
+    if (!!req.certPem !== !!req.keyPem || !!req.adminCertPem !== !!req.adminKeyPem) throw new Error('每个入口的证书与私钥必须成对填写');
     // 证书处理
     let haveCert = false;
     if (req.certPem && req.keyPem) {
@@ -298,6 +353,21 @@ export function applyRequest(req, { dryRun = false } = {}) {
       throw new Error('Full/Strict 缺少回源证书，已取消应用，避免静默降级为 HTTP。请提供证书或明确选择 Flexible。');
     }
     result.haveCert = haveCert;
+    let haveAdminCert = fs.existsSync(adminCertFile) && fs.existsSync(adminKeyFile);
+    if (settings.adminOrigin && req.adminCertPem && req.adminKeyPem) {
+      if (!looksLikePem(req.adminCertPem,'cert') || !looksLikePem(req.adminKeyPem,'key')) throw new Error('管理端证书或私钥不是 PEM 格式');
+      if (!dryRun) {
+        validateOriginCertificate(req.adminCertPem,req.adminKeyPem,[settings.adminHost]);
+        atomicWrite(adminCertFile,req.adminCertPem+'\n',0o644);
+        atomicWrite(adminKeyFile,req.adminKeyPem+'\n',0o640);
+        execFileSync('chown',['root:caddy',adminCertFile,adminKeyFile]);
+      }
+      haveAdminCert = true;
+    }
+    if (settings.adminOrigin && ['full','strict'].includes(settings.adminOrigin.sslMode) && !haveAdminCert) throw new Error('管理端 Full/Strict 缺少独立回源证书，已取消应用');
+    if (!dryRun && haveCert && settings.cdn !== 'none') validateOriginCertificate(fs.readFileSync(certFile),fs.readFileSync(keyFile),[settings.userHost,...(!settings.adminOrigin && settings.adminHost && settings.adminHost !== settings.userHost ? [settings.adminHost] : [])]);
+    if (!dryRun && settings.adminOrigin && haveAdminCert && settings.adminOrigin.cdn !== 'none') validateOriginCertificate(fs.readFileSync(adminCertFile),fs.readFileSync(adminKeyFile),[settings.adminHost]);
+    result.haveAdminCert = haveAdminCert;
 
     // 写 config + 运行时域名覆盖
     const merged = mergeConfigFile(confFile, settings);
@@ -305,7 +375,7 @@ export function applyRequest(req, { dryRun = false } = {}) {
     atomicWrite(path.join(dataDir, 'domain.json'), JSON.stringify(settings, null, 2));
 
     // 生成并校验 Caddyfile
-    const caddyText = buildCaddyfile(settings, { backendPort, certFile, keyFile, haveCert });
+    const caddyText = buildCaddyfile(settings, { backendPort, certFile, keyFile, haveCert, haveAdminCert, adminCertFile, adminKeyFile });
     result.caddyfile = caddyText;
     if (dryRun) {
       atomicWrite(caddyFile, caddyText, 0o644);
@@ -319,9 +389,9 @@ export function applyRequest(req, { dryRun = false } = {}) {
         throw new Error(`Caddyfile 校验失败：${(e.stderr || e.message || '').toString().slice(0, 400)}`);
       }
       fs.renameSync(tmpCaddy, caddyFile);
+      reloadAttempted = true;
       try { execFileSync('systemctl', ['reload', SYS.caddyService], { stdio: 'pipe' }); }
       catch { execFileSync('systemctl', ['restart', SYS.caddyService], { stdio: 'pipe' }); }
-      reloaded = true;
       // 重启后端以加载新域名（异步，避免阻塞当前进程）
       try { execFileSync('systemctl', ['restart', '--no-block', SYS.service], { stdio: 'pipe' }); } catch {}
     }
@@ -335,7 +405,10 @@ export function applyRequest(req, { dryRun = false } = {}) {
           if (backup.exists) atomicWrite(backup.file, backup.bytes, backup.mode, backup);
           else if (fs.existsSync(backup.file)) fs.unlinkSync(backup.file);
         }
-        if (reloaded && !dryRun) execFileSync('systemctl', ['reload', SYS.caddyService], { stdio: 'pipe' });
+        if (reloadAttempted && !dryRun) {
+          try { execFileSync('systemctl', ['reload', SYS.caddyService], { stdio:'pipe' }); }
+          catch { execFileSync('systemctl', ['restart', SYS.caddyService], { stdio:'pipe' }); }
+        }
         result.rolledBack = true;
       } catch (rollback) { result.warnings.push(`回滚失败，请立即检查源站配置：${rollback.message}`); }
     }
@@ -366,8 +439,10 @@ async function cli() {
       s = JSON.parse(raw);
     } else {
       const env = process.env;
+      const saved = env.NUI_CONF_FILE ? JSON.parse(fs.readFileSync(env.NUI_CONF_FILE,'utf8')) : {};
       s = {
-        mode: env.NUI_MODE || 'domain', userHost: env.NUI_USER_HOST || '', adminHost: env.NUI_ADMIN_HOST || '',
+        adminOrigin:saved.adminOrigin || null,
+        mode: env.NUI_MODE || 'domain', userHost: env.NUI_USER_HOST || '', adminHost: env.NUI_ADMIN_HOST || (saved.adminOrigin ? saved.adminHost : '') || '',
         cdn: env.NUI_CDN || (env.NUI_CLOUDFLARE === '1' ? 'cloudflare' : 'none'),
         cdnName: env.NUI_CDN_NAME || '', sslMode: env.NUI_SSL_MODE || 'auto',
         cfHttpPort: parseInt(env.NUI_CF_HTTP_PORT || '80', 10), cfHttpsPort: parseInt(env.NUI_CF_HTTPS_PORT || '443', 10),
@@ -376,7 +451,7 @@ async function cli() {
     }
     const { settings } = normalizeDomain(s, {});
     const haveCert = (process.env.NUI_HAVE_CERT === '1') || (fs.existsSync(SYS.certFile) && fs.existsSync(SYS.keyFile));
-    process.stdout.write(buildCaddyfile(settings, { haveCert, backendPort: parseInt(process.env.NUI_BACKEND_PORT || String(SYS.backendPort), 10) }));
+    process.stdout.write(buildCaddyfile(settings, { haveCert, haveAdminCert:fs.existsSync(SYS.adminCertFile) && fs.existsSync(SYS.adminKeyFile), backendPort: parseInt(process.env.NUI_BACKEND_PORT || String(SYS.backendPort), 10) }));
     return;
   }
   if (cmd === 'apply') {

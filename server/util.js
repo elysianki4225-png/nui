@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
-import { behindCdn } from './domain.js';
+import { behindCdn, originForRequest } from './domain.js';
 
 export { behindCdn };
 export const MB = 1024 * 1024;
-export const VERSION = '2.1.0';
+export const VERSION = '2.2.0';
 
 export function randomId(bytes = 12) {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -131,6 +131,7 @@ export function clearCookie(res, name, opts = {}) {
 }
 
 export function isHttps(req, cfg) {
+  cfg = originForRequest(req,cfg);
   if (req.socket && req.socket.encrypted) return true;
   if (cfg.trustProxy) {
     // CDN 代理（Cloudflare 小黄云 / 第三方）：访客到边缘始终是 HTTPS，即便回源是 HTTP(Flexible)

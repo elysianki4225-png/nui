@@ -16,4 +16,15 @@ click('加密 · Full');assert.equal(document.querySelectorAll('textarea')[0].va
 const input=[...document.querySelectorAll('input')].find(i=>i.value==='m.example.com');input.value='new.example.com';input.dispatchEvent(new dom.window.Event('input'));assert(document.querySelector('.domain-dns-help').textContent.includes('new.example.com'));
 assert.equal(document.querySelector('input[type=password]').getAttribute('autocomplete'),'off');
 click('直连（无 CDN）');assert(!document.querySelector('textarea'));assert(!document.body.textContent.includes('null'));
+const independent=[...document.querySelectorAll('label')].find(l=>l.textContent==='管理端使用独立配置').querySelector('input');
+independent.checked=true;independent.dispatchEvent(new dom.window.Event('change'));
+const byLabel=label=>[...document.querySelectorAll('label')].find(l=>l.querySelector('.tf-label')?.textContent===label);
+const cdn=byLabel('管理端 CDN').querySelector('select');cdn.value='cloudflare';cdn.dispatchEvent(new dom.window.Event('change'));
+const mode=byLabel('管理端 SSL 模式').querySelector('select');mode.value='strict';mode.dispatchEvent(new dom.window.Event('change'));
+const adminCert=byLabel('管理端证书 PEM').querySelector('textarea');adminCert.value='ADMIN-CERT';adminCert.dispatchEvent(new dom.window.Event('input'));
+const adminKey=byLabel('管理端私钥 PEM').querySelector('textarea');adminKey.value='ADMIN-KEY';adminKey.dispatchEvent(new dom.window.Event('input'));
+const modeAgain=byLabel('管理端 SSL 模式').querySelector('select');modeAgain.value='full';modeAgain.dispatchEvent(new dom.window.Event('change'));
+assert.equal(byLabel('管理端证书 PEM').querySelector('textarea').value,'ADMIN-CERT');
+assert.equal(byLabel('管理端私钥 PEM').querySelector('textarea').value,'ADMIN-KEY');
+assert(!document.body.textContent.includes('null'));
 console.log('Domain UI: collapse, CDN defaults, certificate persistence, live DNS help, secret masking, no null text PASS');})().catch(e=>{console.error(e);process.exitCode=1});

@@ -485,7 +485,7 @@ EOF
       const fs=require("fs");const f=process.argv[1];
       const c=JSON.parse(fs.readFileSync(f,"utf8"));
       const cf=process.env.CLOUDFLARE==="1";
-      c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST;
+      c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST||(c.adminOrigin?c.adminHost:"");
       if(process.env.PUBLIC_IP)c.publicIp=process.env.PUBLIC_IP;
       c.cloudflare=cf;c.cdn=cf?"cloudflare":"none";c.cdnName=cf?"Cloudflare":"";
       c.sslMode=cf?(c.sslMode&&c.sslMode!=="auto"?c.sslMode:"flexible"):"auto";
@@ -506,14 +506,18 @@ write_caddyfile() {
   # 与管理面板「域名」页共用同一生成器（server/domain.js），保证一致
   local cdn="none"
   [[ $CLOUDFLARE -eq 1 ]] && cdn="cloudflare"
+  local staged; staged="$(mktemp "$CADDY_DIR/.nui-caddy.XXXXXX")"
+  NUI_CONF_FILE="$CONF_FILE" NUI_ADMIN_CERT_FILE="$CONF_DIR/admin-origin.pem" NUI_ADMIN_KEY_FILE="$CONF_DIR/admin-origin.key" \
   NUI_MODE="$MODE" NUI_USER_HOST="$USER_HOST" NUI_ADMIN_HOST="$ADMIN_HOST" \
   NUI_CDN="$cdn" NUI_SSL_MODE="${SSL_MODE:-auto}" \
   NUI_CF_HTTP_PORT="${CF_HTTP_PORT:-80}" NUI_CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
   NUI_HAVE_CERT="$HAVE_CF_CERT" NUI_BACKEND_PORT="$BACKEND_PORT" \
   NUI_CF_CERT_FILE="$CF_CERT_FILE" NUI_CF_KEY_FILE="$CF_KEY_FILE" \
-  "$APP_DIR/node/bin/node" "$APP_DIR/server/domain.js" caddyfile > "$CADDY_FILE"
-  chmod 644 "$CADDY_FILE"
-  "$CADDY_BIN" validate --config "$CADDY_FILE" >/dev/null 2>&1 && ok "Caddyfile 校验通过" || warn "Caddyfile 校验未通过，请检查"
+  "$APP_DIR/node/bin/node" "$APP_DIR/server/domain.js" caddyfile > "$staged" || { rm -f "$staged"; die "域名配置生成失败，原 Caddyfile 未改动"; }
+  "$CADDY_BIN" validate --config "$staged" --adapter caddyfile >/dev/null 2>&1 || { rm -f "$staged"; die "Caddyfile 校验未通过，原代理配置未改动"; }
+  install -m 0644 "$staged" "$CADDY_FILE"
+  rm -f "$staged"
+  ok "Caddyfile 校验通过"
 }
 
 # ---------- 域名管理特权应用（systemd path 触发 root helper） ----------
@@ -535,6 +539,8 @@ Environment=NUI_CONF_FILE=${CONF_FILE}
 Environment=NUI_CADDY_FILE=${CADDY_FILE}
 Environment=NUI_CF_CERT_FILE=${CF_CERT_FILE}
 Environment=NUI_CF_KEY_FILE=${CF_KEY_FILE}
+Environment=NUI_ADMIN_CERT_FILE=${CONF_DIR}/admin-origin.pem
+Environment=NUI_ADMIN_KEY_FILE=${CONF_DIR}/admin-origin.key
 Environment=NUI_CADDY_BIN=${CADDY_BIN}
 Environment=NUI_BACKEND_PORT=${BACKEND_PORT}
 Environment=NUI_DATA_DIR=${DATA_DIR}

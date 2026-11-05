@@ -38,6 +38,15 @@ try {
  await admin.locator('.acceleration textarea').fill('127.0.0.1');
  await admin.getByRole('button',{name:'检测候选兼容性（不保存）'}).click();
  await admin.locator('.acceleration [role=status]').filter({hasText:'仅允许公网 IP'}).waitFor();
+ await admin.getByLabel('管理端使用独立配置',{exact:true}).check();
+ await admin.getByLabel('管理端 CDN',{exact:true}).selectOption('cloudflare');
+ await admin.getByLabel('管理端 SSL 模式',{exact:true}).selectOption('strict');
+ await admin.getByLabel('管理回源 HTTP 端口',{exact:true}).fill('8080');
+ await admin.getByLabel('管理回源 HTTPS 端口',{exact:true}).fill('8443');
+ await admin.getByLabel('管理端证书 PEM',{exact:true}).fill('draft-admin-cert');
+ await admin.getByLabel('管理端私钥 PEM',{exact:true}).fill('draft-admin-key');
+ await admin.getByLabel('管理端 SSL 模式',{exact:true}).selectOption('full');
+ assert.equal(await admin.getByLabel('管理端证书 PEM',{exact:true}).inputValue(),'draft-admin-cert');
  for(const [width,height] of [[360,780],[768,1024],[1440,900],[780,360]]) {await admin.setViewportSize({width,height});assert(await admin.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
  await admin.setViewportSize({width:1440,height:900});
  await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.locator('input[type=file]').waitFor();

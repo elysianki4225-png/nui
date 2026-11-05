@@ -63,7 +63,7 @@ export function createStatic(cfg) {
   const adminIndex = path.join(WEB_ROOT, 'admin', 'index.html');
 
   return async function handleStatic(req, res, pathname, host) {
-    const isAdminHost = cfg.mode === 'ip' && cfg.adminHost && host === cfg.adminHost;
+    const isAdminHost = cfg.adminHost && host === cfg.adminHost && (cfg.mode === 'ip' || cfg.adminHost !== cfg.userHost);
     const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/');
 
     // 共享静态资源
@@ -85,7 +85,7 @@ export function createStatic(cfg) {
     }
     // 管理应用模块 / SPA
     if (isAdminPath) {
-      if (cfg.mode === 'ip' && !isAdminHost) {
+      if (cfg.adminHost && cfg.adminHost !== cfg.userHost && !isAdminHost) {
         // IP 模式下管理端在独立子域名
         res.writeHead(302, { Location: cfg.adminUrl }); res.end(); return true;
       }

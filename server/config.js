@@ -62,7 +62,7 @@ export function loadConfig() {
     const dj = path.join(cfg.dataDir, 'domain.json');
     if (fs.existsSync(dj)) {
       const d = JSON.parse(fs.readFileSync(dj, 'utf8'));
-      for (const k of ['mode', 'userHost', 'adminHost', 'cdn', 'cdnName', 'sslMode', 'cfHttpPort', 'cfHttpsPort', 'realIpHeader', 'cfOnly']) {
+      for (const k of ['mode', 'userHost', 'adminHost', 'adminOrigin', 'cdn', 'cdnName', 'sslMode', 'cfHttpPort', 'cfHttpsPort', 'realIpHeader', 'cfOnly']) {
         if (d[k] !== undefined) cfg[k] = d[k];
       }
       cfg.cloudflare = cfg.cdn === 'cloudflare';
@@ -76,12 +76,12 @@ export function loadConfig() {
   if (!cfg.userHost) cfg.userHost = `localhost:${cfg.port}`;
   if (cfg.mode === 'ip' && !cfg.adminHost) cfg.adminHost = cfg.userHost;
   cfg.userUrl = cfg.userHost.startsWith('http') ? cfg.userHost : `https://${cfg.userHost}`;
-  cfg.adminUrl = cfg.mode === 'ip'
+  cfg.adminUrl = cfg.mode === 'ip' || (cfg.adminHost && cfg.adminHost !== cfg.userHost)
     ? (cfg.adminHost.startsWith('http') ? cfg.adminHost : `https://${cfg.adminHost}`)
     : `${cfg.userUrl}/admin/`;
   if (cfg.dev) {
     cfg.userUrl = `http://${cfg.userHost}`;
-    cfg.adminUrl = cfg.mode === 'ip' ? `http://${cfg.adminHost}` : `${cfg.userUrl}/admin/`;
+    cfg.adminUrl = cfg.mode === 'ip' || (cfg.adminHost && cfg.adminHost !== cfg.userHost) ? `http://${cfg.adminHost}` : `${cfg.userUrl}/admin/`;
   }
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   return cfg;
