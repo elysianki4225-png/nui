@@ -1,14 +1,19 @@
 import {
-  h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
+  API_BASE, h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PUT, PATCH, DEL, ApiError,
   formatBytes, formatDate, formatRelative, formatAccount, copyText, debounce, downloadBlob, TYPE_META,
 } from '/assets/js/core.js';
-import { CryptoClient, generateKey, parseKey, formatKey, cryptoAvailable } from '/assets/js/crypto.js';
+import { base32Encode, CryptoClient, generateKey, parseKey, formatKey, cryptoAvailable } from '/assets/js/crypto.js';
 import { MediaManager } from '/assets/js/media.js';
 import { VirtualView } from '/assets/js/virtual.js';
 
 const $app = document.getElementById('app');
 const REMEMBER_KEY = 'memo-remember';
+const SAVED_LOGIN = 'memo-saved-login';
+function savedLogin() { try { return JSON.parse(localStorage.getItem(SAVED_LOGIN) || 'null'); } catch { return null; } }
+function forgetLogin() { localStorage.removeItem(SAVED_LOGIN); sessionStorage.removeItem(REMEMBER_KEY); }
+function saveLogin() { localStorage.setItem(SAVED_LOGIN, JSON.stringify({ account: S.account, key: base32Encode(S.master) })); }
+
 
 const S = {
   config: null, crypto: null, media: null, account: null, master: null,
@@ -35,6 +40,11 @@ async function boot() {
   document.title = (S.config?.siteName || '备忘录');
   setInterval(checkAutoLock, 20_000);
   ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => document.addEventListener(ev, () => { S.lastActivity = Date.now(); }, { passive: true }));
+  const saved = savedLogin();
+  if (saved?.account && saved?.key) {
+    try { S.account = saved.account; await unlockWith(parseKey(saved.key), true); return; }
+    catch { S.account = null; toast('自动登录未成功，请手动登录或稍后重试', { type: 'info' }); }
+  }
   let me = null;
   try { me = await GET('/api/user/me'); } catch {}
   if (me && me.account) {
@@ -94,7 +104,7 @@ function buildLogin(body) {
   body.append(
     h('label', { class: 'tf auth-field' }, h('span', { class: 'tf-box' }, h('span', { class: 'tf-leading' }, icon('badge')), acct, h('span', { class: 'tf-label' }, '数字账号')), h('span', { class: 'tf-helper' }, '16 位数字账号')),
     h('label', { class: 'tf auth-field' }, h('span', { class: 'tf-box' }, h('span', { class: 'tf-leading' }, icon('key')), key, h('span', { class: 'tf-label' }, '密钥')), h('span', { class: 'tf-helper' }, '注册时获得的 52 位密钥')),
-    h('label', { class: 'check', style: { margin: '4px 0 12px' } }, remember, h('span', { class: 'check-box' }, icon('check')), h('span', { class: 'md-body-m' }, '在本设备记住密钥（关闭标签页后清除）')),
+    h('label', { class: 'check', style: { margin: '4px 0 12px' } }, remember, h('span', { class: 'check-box' }, icon('check')), h('span', { class: 'md-body-m' }, '记住账号与密钥，下次自动登录（仅私人设备；本机使用者可读取密钥）')),
     err, btn,
   );
   async function doLogin() {
@@ -108,8 +118,8 @@ function buildLogin(body) {
       const proof = (await tempProof(master));
       await POST('/api/user/login', { account, proof });
       S.account = account;
-      if (remember.checked) sessionStorage.setItem(REMEMBER_KEY, key.value.trim());
-      await unlockWith(master, true);
+      await unlockWith(master, false);
+      if (remember.checked) { try { saveLogin(); } catch { toast('浏览器不允许保存凭据', { type: 'error' }); } } else forgetLogin();
     } catch (e) { err.textContent = e.message; btn.disabled = false; }
   }
   key.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
@@ -215,14 +225,14 @@ async function unlockWith(master, verify) {
 function lock() {
   if (S.view !== 'main') return;
   cleanupSession(false);
-  sessionStorage.removeItem(REMEMBER_KEY);
+  forgetLogin();
   setView('lock');
 }
 
 async function logout() {
   try { await POST('/api/user/logout'); } catch {}
   cleanupSession(true);
-  sessionStorage.removeItem(REMEMBER_KEY);
+  forgetLogin();
   S.account = null;
   authTab = 'login';
   setView('auth');
@@ -362,7 +372,9 @@ function adSlot() {
 }
 
 function renderMemos() {
+  S.virtual?.destroy(); S.virtual = null;
   const c = S.el.content;
+  clear(c);
   c.classList.add('view-enter');
   // 搜索栏
   const searchInput = h('input', { placeholder: '搜索备忘录…', value: S.search });
@@ -396,7 +408,7 @@ function renderMemos() {
   const empty = h('div', { class: 'empty-state hidden' }, icon('sticky_note_2'), h('h3', {}, '还没有备忘录'), h('p', {}, '点击右下角「新建」按钮，保存你的第一条加密备忘录。'));
   const syncStatus = h('div', { class: 'memo-count', style: { padding: '6px 16px', textAlign: 'center' } });
   const ad = adSlot();
-  c.append(searchBar, toolbar, selBar, banner, ad, scroll, empty, syncStatus);
+  c.append(...[searchBar, toolbar, selBar, banner, ad, scroll, empty, syncStatus].filter(Boolean));
   S.el = { ...S.el, scroll, empty, count, selBar, syncStatus, searchInput };
 
   const columns = S.viewMode === 'grid' ? gridColumns(scroll.clientWidth) : 1;
@@ -974,8 +986,74 @@ function renderSettings() {
     ));
   const about = h('div', { class: 'text-center muted md-body-s', style: { padding: '16px' } },
     `${S.config?.siteName || '备忘录'} v${S.config?.version || '1.0.0'} · 端到端加密备忘录`);
-  scroll.append(g1, g2, g3, g4, about);
+  const remember = h('input', { type: 'checkbox', checked: savedLogin()?.account === S.account });
+  remember.addEventListener('change', async () => {
+    if (remember.checked) {
+      const ok = await confirmDialog({ title: '记住此设备？', message: '账号和密钥将保存在此浏览器，关闭后仍保留。本机使用者或恶意扩展可读取，请勿在公共设备开启。清除浏览器数据后仍需自行保管的密钥。', confirmLabel: '记住' });
+      if (!ok) { remember.checked = false; return; }
+      try { saveLogin(); } catch { remember.checked = false; toast('保存失败，请检查浏览器存储权限', { type: 'error' }); }
+    } else forgetLogin();
+  });
+  g2.append(h('div', { class: 'settings-card' },
+    h('label', { class: 'settings-row' }, h('div', { class: 's-content' }, h('div', { class: 's-title' }, '记住账号与密钥'), h('div', { class: 's-sub' }, '仅此浏览器生效；关闭、锁定或退出会清除已记住的凭据')), remember),
+    h('button', { class: 'btn btn-tonal', onClick: async () => {
+      if (await confirmDialog({ title: '复制密钥', message: '密钥可解密所有备忘录。请勿分享，复制后注意清理剪贴板。', confirmLabel: '复制' })) {
+        const ok = await copyText(base32Encode(S.master)); toast(ok ? '密钥已复制' : '复制失败');
+      }
+    } }, icon('key'), '复制密钥')));
+  const profile = h('div', { class: 'settings-group' });
+  scroll.append(g1, profile, g2, g3, g4, about);
+  loadProfileEditor(profile);
   c.append(scroll);
+}
+
+async function loadProfileEditor(container) {
+  try {
+    const { profile } = await GET('/api/user/profile');
+    if (!container.isConnected) return;
+    const name = h('input', { class: 'tf-input', value: profile.nickname, maxlength: 24, placeholder: '网名（唯一）', 'aria-label': '网名' });
+    const bio = h('textarea', { class: 'tf-input', value: profile.bio, maxlength: 280, placeholder: '账户简介（最多 280 字）', 'aria-label': '账户简介' });
+    const avatar = h('img', { class: 'profile-avatar', alt: '头像', src: profile.avatar ? API_BASE + profile.avatar : '', hidden: !profile.avatar });
+    const file = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', 'aria-label': '上传头像' });
+    const error = h('p', { role: 'status', class: 'md-body-s' });
+    const save = h('button', { class: 'btn btn-filled', onClick: async () => {
+      save.disabled = true; error.textContent = '';
+      try {
+        await PATCH('/api/user/profile', { nickname: name.value, bio: bio.value });
+        error.textContent = '网名与简介已保存，正在处理头像…';
+        if (file.files[0]) {
+          const image = await avatarJPEG(file.files[0]);
+          await PUT('/api/user/profile/avatar', image);
+        }
+        error.textContent = '公开资料已保存';
+        const updated = await GET('/api/user/profile');
+        avatar.hidden = !updated.profile.avatar;
+        if (updated.profile.avatar) avatar.src = API_BASE + updated.profile.avatar + '?v=' + Date.now();
+        file.value = '';
+      } catch (e) { error.textContent = (error.textContent ? '网名与简介已保存；头像未完成：' : '') + e.message; } finally { save.disabled = false; }
+    } }, '保存公开资料');
+    container.append(h('h3', {}, '公开资料'), h('div', { class: 'settings-card profile-editor' },
+      h('p', { class: 'muted' }, '头像、网名和简介公开，管理员及知道网名的人可查看。请勿填写密钥或私密内容；备忘录内容仍为端到端加密。'),
+      avatar, h('label', {}, '网名', name), h('label', {}, '账户简介', bio), file,
+      h('p', { class: 'muted md-body-s' }, 'JPEG / PNG / WebP，最大 5MB；自动裁剪为 256 像素头像。上传需要管理员配置存储机器人。'),
+      h('div', { class: 'row wrap gap-8' }, save, h('button', { class: 'btn btn-outlined', onClick: async () => {
+        try { await DEL('/api/user/profile/avatar'); avatar.hidden = true; file.value = ''; error.textContent = '头像已移除'; } catch (e) { error.textContent = e.message; }
+      } }, '移除头像')), error));
+  } catch (e) { if (container.isConnected) container.append(h('p', {}, '资料加载失败：' + e.message)); }
+}
+
+async function avatarJPEG(file) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) throw new Error('请选择不超过 5MB 的 JPEG、PNG 或 WebP 图片');
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
+    const ctx = canvas.getContext('2d'); const size = Math.min(bitmap.width, bitmap.height);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 256, 256);
+    ctx.drawImage(bitmap, (bitmap.width - size) / 2, (bitmap.height - size) / 2, size, size, 0, 0, 256, 256);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('头像转换失败');
+    return blob;
+  } finally { bitmap.close(); }
 }
 
 async function deleteAccount() {

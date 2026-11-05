@@ -1,3 +1,4 @@
+import { profileDTO, validateProfile } from './profile.js';
 import crypto from 'node:crypto';
 import { HttpError, readJson, readBody, sendJson, nowSec, clampInt, clearCookie } from './util.js';
 import { verifySecret } from './security.js';
@@ -16,6 +17,69 @@ function memoDTO(m) {
 export function registerUserRoutes(h, ctx) {
   const { route, requireUser, cookieOpts, USER_COOKIE } = h;
   const { cfg, store, pool, sessions, limiter } = ctx;
+
+  route('GET', '/api/user/profile', async req => ({ ok: true, profile: profileDTO(requireUser(req).user) }));
+  route('PATCH', '/api/user/profile', async req => {
+    const { user } = requireUser(req);
+    if (!limiter.allow(`profile:${user.account}`, 60, 3600)) throw new HttpError(429, '修改过于频繁', 'RATE_LIMIT');
+    const body = await readJson(req, 4096);
+    // No await between uniqueness validation and store mutation.
+    const patch = validateProfile(body, store.state.users, user.account);
+    store.log({ t: 'user.update', account: user.account, patch });
+    return { ok: true, profile: profileDTO(user) };
+  });
+  route('GET', '/api/profiles/:nickname', async (req, res, params) => {
+    const key = params.nickname.normalize('NFKC').toLowerCase();
+    const user = Object.values(store.state.users).find(u => u.nicknameKey === key && !u.banned);
+    if (!user) throw new HttpError(404, '资料不存在', 'NOT_FOUND');
+    return { ok: true, profile: profileDTO(user) };
+  });
+  const avatarBusy = new Set();
+  route('PUT', '/api/user/profile/avatar', async req => {
+    const { user } = requireUser(req);
+    if (!user.nickname) throw new HttpError(400, '请先保存网名', 'PROFILE_REQUIRED');
+    if (avatarBusy.has(user.account) || !limiter.allow(`avatar:${user.account}`, 10, 3600)) throw new HttpError(429, '上传过于频繁', 'RATE_LIMIT');
+    avatarBusy.add(user.account);
+    try {
+      const bytes = await readBody(req, 128 * 1024);
+      if (bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255) throw new HttpError(400, '请上传 JPEG 头像', 'BAD_AVATAR');
+      const key = crypto.randomBytes(32), iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+      const encrypted = Buffer.concat([cipher.update(bytes), cipher.final(), cipher.getAuthTag()]);
+      const uploaded = await pool.upload(encrypted, { filename: 'avatar.bin', caption: 'public profile avatar' });
+      if (store.state.users[user.account] !== user) { await pool.deleteMessage(uploaded.botId, uploaded.messageId).catch(() => {}); throw new HttpError(409, '账号已删除', 'NOT_FOUND'); }
+      const old = user.avatar;
+      store.log({ t: 'user.update', account: user.account, patch: { avatar: { ...uploaded, key: key.toString('hex'), iv: iv.toString('hex') } } });
+      if (old) pool.deleteMessage(old.botId, old.messageId).catch(() => {});
+      return { ok: true, profile: profileDTO(user) };
+    } finally { avatarBusy.delete(user.account); }
+  });
+  route('DELETE', '/api/user/profile/avatar', async req => {
+    const { user } = requireUser(req);
+    if (avatarBusy.has(user.account)) throw new HttpError(409, '头像正在上传，请稍后操作', 'AVATAR_BUSY');
+    const old = user.avatar;
+    store.log({ t: 'user.update', account: user.account, patch: { avatar: null } });
+    if (old) pool.deleteMessage(old.botId, old.messageId).catch(() => {});
+    return { ok: true };
+  });
+  route('GET', '/api/avatars/:nickname', async (req, res, params, ip) => {
+    if (!limiter.allow(`avatar-read:${ip}`, 120, 60)) throw new HttpError(429, '请求过于频繁', 'RATE_LIMIT');
+    const user = Object.values(store.state.users).find(u => u.nicknameKey === params.nickname.normalize('NFKC').toLowerCase() && !u.banned);
+    const a = user?.avatar;
+    const bot = a && store.state.bots.find(b => b.id === a.botId);
+    if (!bot) throw new HttpError(404, '头像不存在', 'NOT_FOUND');
+    const path = await pool.getFilePath(bot, a.fileId);
+    const upstream = await fetch(`${pool.apiBase}/file/bot${bot.token}/${path}`, { signal: AbortSignal.timeout(15000) });
+    if (!upstream.ok) throw new HttpError(502, '头像暂时不可用', 'AVATAR_FETCH');
+    const chunks = []; let size = 0;
+    for await (const chunk of upstream.body) { size += chunk.length; if (size > 128 * 1024 + 16) throw new HttpError(502, '头像过大', 'AVATAR_SIZE'); chunks.push(chunk); }
+    const bytes = Buffer.concat(chunks);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(a.key, 'hex'), Buffer.from(a.iv, 'hex'));
+    decipher.setAuthTag(bytes.subarray(-16));
+    const image = Buffer.concat([decipher.update(bytes.subarray(0, -16)), decipher.final()]);
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': image.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+    res.end(image);
+  });
 
   function maxFileSize() {
     return Math.min(cfg.maxFileSize, store.state.settings.maxFileSizeMB * MB);
@@ -202,6 +266,7 @@ export function registerUserRoutes(h, ctx) {
       store.log({ t: 'memo.delete', id: m.id });
       purgeMemoFiles(m);
     }
+    if (user.avatar) pool.deleteMessage(user.avatar.botId, user.avatar.messageId).catch(() => {});
     store.log({ t: 'user.delete', account: user.account });
     sessions.deleteForAccount(user.account);
     clearCookie(res, USER_COOKIE, cookieOpts(req));
