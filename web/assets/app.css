@@ -332,3 +332,24 @@
 .profile-avatar[hidden] { display: none; }
 .public-profile { display: flex; align-items: center; gap: 10px; margin-top: 8px; overflow-wrap: anywhere; }
 .public-profile .profile-avatar { width: 40px; height: 40px; }
+
+/* Decorative pet never captures input, covers a viewport or creates resize loops. */
+.site-pet {
+  position: fixed; z-index: 15; pointer-events: none; user-select: none;
+  right: max(12px, env(safe-area-inset-right)); bottom: max(100px, env(safe-area-inset-bottom));
+  width: min(var(--pet-size, 120px), 22vw, calc(100vw - 32px));
+  height: min(var(--pet-size, 120px), 22vw, 24vh); max-height: calc(100dvh - 120px);
+  object-fit: contain; contain: layout style; filter: drop-shadow(0 3px 5px #0002);
+}
+.site-pet[hidden] { display: none; }
+@media(max-height:300px) { .site-pet { display:none; } }
+@media(prefers-reduced-motion:reduce) { .site-pet { display:none; } }
+.theme-editor, .theme-options { min-width: 0; }
+.theme-options { display: grid; gap: 16px; }
+.theme-options p { margin: 0; line-height: 1.6; }
+.theme-options input[type=file], .theme-options select { max-width:100%; min-width:0; }
+.theme-options input[type=color] { width: 64px; height: 40px; border: 0; padding: 2px; }
+.theme-preview { width: min(100%, 320px); max-height: 240px; object-fit: contain; border-radius:12px; background: repeating-conic-gradient(#ddd 0 25%,#fff 0 50%) 0 / 16px 16px; }
+.theme-preview[hidden] { display:none; }
+.theme-current { display:flex; flex-wrap:wrap; gap:16px; }
+.theme-current figure { margin:0; max-width:100%; }

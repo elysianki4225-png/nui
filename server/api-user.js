@@ -66,14 +66,8 @@ export function registerUserRoutes(h, ctx) {
     if (!limiter.allow(`avatar-read:${ip}`, 120, 60)) throw new HttpError(429, '请求过于频繁', 'RATE_LIMIT');
     const user = Object.values(store.state.users).find(u => u.nicknameKey === params.nickname.normalize('NFKC').toLowerCase() && !u.banned);
     const a = user?.avatar;
-    const bot = a && store.state.bots.find(b => b.id === a.botId);
-    if (!bot) throw new HttpError(404, '头像不存在', 'NOT_FOUND');
-    const path = await pool.getFilePath(bot, a.fileId);
-    const upstream = await fetch(`${pool.apiBase}/file/bot${bot.token}/${path}`, { signal: AbortSignal.timeout(15000) });
-    if (!upstream.ok) throw new HttpError(502, '头像暂时不可用', 'AVATAR_FETCH');
-    const chunks = []; let size = 0;
-    for await (const chunk of upstream.body) { size += chunk.length; if (size > 128 * 1024 + 16) throw new HttpError(502, '头像过大', 'AVATAR_SIZE'); chunks.push(chunk); }
-    const bytes = Buffer.concat(chunks);
+    if (!a) throw new HttpError(404, '头像不存在', 'NOT_FOUND');
+    const bytes = await pool.read(a, 128 * 1024 + 16);
     const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(a.key, 'hex'), Buffer.from(a.iv, 'hex'));
     decipher.setAuthTag(bytes.subarray(-16));
     const image = Buffer.concat([decipher.update(bytes.subarray(0, -16)), decipher.final()]);
@@ -113,7 +107,7 @@ export function registerUserRoutes(h, ctx) {
 
   route('GET', '/api/user/stats', async (req) => {
     const { user } = requireUser(req);
-    return { ok: true, stats: store.userStats(user.account), storageReady: pool.bots().length > 0 };
+    return { ok: true, stats: store.userStats(user.account), storageReady: pool.ready() };
   });
 
   // 创建（占位，随后上传密文分块）
@@ -129,7 +123,7 @@ export function registerUserRoutes(h, ctx) {
     if (!Number.isFinite(size) || size < 0 || size > maxFileSize()) throw new HttpError(400, `文件大小需在 0 - ${Math.floor(maxFileSize() / MB)}MB 之间`, 'BAD_SIZE');
     if (!meta || meta.length > META_MAX) throw new HttpError(400, '元数据无效或过大', 'BAD_META');
     if (type === 'text' && expectedParts !== 1 && size <= cfg.chunkSize) { /* 允许 */ }
-    if (pool.bots().length === 0) throw new HttpError(503, '管理员尚未绑定存储机器人，暂时无法保存', 'NO_BOT');
+    if (!pool.ready()) throw new HttpError(503, '管理员尚未绑定存储机器人，暂时无法保存', 'NO_BOT');
     const id = crypto.randomBytes(12).toString('base64url');
     const memo = {
       id, account: user.account, type, size, meta,

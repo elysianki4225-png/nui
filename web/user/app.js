@@ -1,3 +1,4 @@
+import { loadAppearance } from '/assets/js/appearance.js';
 import {
   API_BASE, h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PUT, PATCH, DEL, ApiError,
@@ -29,7 +30,7 @@ const S = {
 // ============================ 启动 ============================
 boot();
 async function boot() {
-  initTheme(); initRipple(); loadSprite();
+  initTheme(); initRipple(); loadSprite(); loadAppearance();
   if (!cryptoAvailable()) {
     $app.append(h('div', { class: 'auth-wrap' }, h('div', { class: 'auth-card text-center' },
       icon('error', 'xl'), h('h2', {}, '需要安全环境'),
@@ -969,7 +970,7 @@ function renderSettings() {
   const g3 = h('div', { class: 'settings-group' }, h('h3', {}, '数据与存储'),
     h('div', { class: 'settings-card' },
       h('div', { class: 'settings-row' }, h('div', { class: 's-icon' }, icon('cloud_done')),
-        h('div', { class: 's-content' }, h('div', { class: 's-title' }, '内容存储'), h('div', { class: 's-sub' }, '所有密文存储于管理员的 Telegram，服务器不落盘'))),
+        h('div', { class: 's-content' }, h('div', { class: 's-title' }, '内容存储'), h('div', { class: 's-sub' }, '密文存储位置由管理员统一配置，可为服务器磁盘或 Telegram'))),
       h('div', { class: 'settings-row' }, h('div', { class: 's-icon' }, icon('refresh')),
         h('div', { class: 's-content' }, h('div', { class: 's-title' }, '重新同步'), h('div', { class: 's-sub' }, '重新拉取并解密全部备忘录索引')),
         h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: () => { toast('正在同步…'); syncMemos(); } }, '同步')),
@@ -1035,7 +1036,7 @@ async function loadProfileEditor(container) {
     container.append(h('h3', {}, '公开资料'), h('div', { class: 'settings-card profile-editor' },
       h('p', { class: 'muted' }, '头像、网名和简介公开，管理员及知道网名的人可查看。请勿填写密钥或私密内容；备忘录内容仍为端到端加密。'),
       avatar, h('label', {}, '网名', name), h('label', {}, '账户简介', bio), file,
-      h('p', { class: 'muted md-body-s' }, 'JPEG / PNG / WebP，最大 5MB；自动裁剪为 256 像素头像。上传需要管理员配置存储机器人。'),
+      h('p', { class: 'muted md-body-s' }, 'JPEG / PNG / WebP，最大 5MB；自动裁剪为 256 像素头像。存储由管理员配置。'),
       h('div', { class: 'row wrap gap-8' }, save, h('button', { class: 'btn btn-outlined', onClick: async () => {
         try { await DEL('/api/user/profile/avatar'); avatar.hidden = true; file.value = ''; error.textContent = '头像已移除'; } catch (e) { error.textContent = e.message; }
       } }, '移除头像')), error));

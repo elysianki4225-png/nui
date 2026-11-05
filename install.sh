@@ -3,7 +3,7 @@
 #  备忘录 (nui-memo) 一键部署脚本
 #  支持: Debian 11 / 12 / 13, Ubuntu 22.04 / 24.04 / 26.04 (amd64 / arm64)
 #  特性: 自动检测 IP · 自动申请 HTTPS 证书 · 域名或 nip.io 自动分配
-#        管理员界面 + 用户界面 · Telegram 加密存储 · systemd 守护
+#        管理员界面 + 用户界面 · 本地 / Telegram 加密存储 · systemd 守护
 #        管理面板「域名」页：运行时换域名 / CDN / 加密模式 / 回源端口
 #
 #  用法:
@@ -697,7 +697,7 @@ print_summary() {
   echo
   echo "  下一步:"
   echo "   1. 打开管理界面，首次进入设置管理员账号密码"
-  echo "   2. 在「机器人」页绑定你的 Telegram Bot Token 与 Chat ID"
+  echo "   2. 在「存储」页选择本地磁盘；或在「机器人」页绑定 Telegram 后使用 TG 存储"
   echo "      (先向机器人发一条消息，再点「自动检测」获取 Chat ID)"
   echo "   3. 打开用户界面注册数字账号，妥善保存密钥，开始使用"
   echo "   4. 如需换域名 / 套 CDN：管理界面「域名」页可随时修改（含 nip.io 换自定义域名）"
@@ -784,7 +784,7 @@ uninstall() {
 main() {
   echo "${C_BOLD}"
   echo "  备忘录 (nui-memo) 一键部署"
-  echo "  端到端加密 · Telegram 存储 · 自动 HTTPS"
+  echo "  端到端加密 · 本地 / Telegram 存储 · 自动 HTTPS"
   echo "${C_RESET}"
   [[ $EUID -eq 0 ]] || die "请以 root 运行：sudo bash install.sh"
   [[ $DO_UNINSTALL -eq 1 ]] && uninstall

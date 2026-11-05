@@ -2,7 +2,7 @@ import http from 'node:http';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { Sessions, RateLimiter, IpBanList, clientIp } from './security.js';
-import { TelegramPool } from './telegram.js';
+import { StoragePool } from './storage.js';
 import { createApi } from './api.js';
 import { createStatic } from './static.js';
 import { sendError, isHttps, VERSION, behindCdn } from './util.js';
@@ -13,7 +13,7 @@ const store = new Store(cfg.dataDir);
 await store.load();
 
 const sessions = new Sessions(store);
-const pool = new TelegramPool(store, cfg);
+const pool = new StoragePool(store, cfg);
 const ipBans = new IpBanList();
 ipBans.rebuild(store.state.ipBans);
 const limiter = new RateLimiter();

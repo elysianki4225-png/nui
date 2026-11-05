@@ -1,3 +1,5 @@
+import { registerAppearanceRoutes } from './appearance.js';
+import { registerStorageRoutes } from './storage.js';
 import os from 'node:os';
 import { sendJson, sendError, HttpError, readJson, parseCookies, setCookie, clearCookie, isHttps, randomDigits, nowSec, clampInt, VERSION } from './util.js';
 import { hashSecret, verifySecret, clientIp } from './security.js';
@@ -103,7 +105,7 @@ export function createApi(ctx) {
     autoLockMinutes: store.state.settings.autoLockMinutes,
     motd: store.state.settings.motd || '',
     version: VERSION,
-    storageReady: pool.bots().length > 0,
+    storageReady: pool.ready(),
     ads: publicAds(store.state.settings),
   }));
 
@@ -209,6 +211,8 @@ export function createApi(ctx) {
 
   registerUserRoutes(helpers, ctx);
   registerAdminRoutes(helpers, ctx);
+  registerStorageRoutes(helpers, ctx);
+  registerAppearanceRoutes(helpers, ctx);
 
   // ---------- 分发 ----------
   return async function handleApi(req, res, pathname) {
@@ -227,6 +231,13 @@ export function createApi(ctx) {
       if (!m) continue;
       const params = {};
       r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+      const storageControl = pathname.startsWith('/api/admin/storage/');
+      const authOnly = /\/(login|logout)$/.test(pathname);
+      if (mutating && !storageControl && !authOnly && store.state.settings.storageMigration) {
+        sendError(res, 503, '管理员正在迁移存储，暂时只读，请稍后重试', 'STORAGE_MIGRATING'); return;
+      }
+      if (mutating) pool.activeWrites++;
       try {
         const result = await r.handler(req, res, params, ip);
         if (result !== undefined && !res.writableEnded) sendJson(res, 200, result);
@@ -235,6 +246,8 @@ export function createApi(ctx) {
         const status = e.status || 500;
         if (status >= 500) console.error(`[api] ${method} ${pathname}:`, e);
         sendError(res, status, e.message || '服务器内部错误', e.code);
+      } finally {
+        if (mutating) pool.activeWrites--;
       }
       return;
     }

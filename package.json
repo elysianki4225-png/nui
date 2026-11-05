@@ -1,15 +1,18 @@
 {
   "name": "nui-memo",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "description": "端到端加密备忘录（开发期构建工具，运行时零依赖）",
   "scripts": {
     "build:export": "node scripts/build-export.mjs",
     "build:assets": "node scripts/build-assets.mjs .asset-tmp",
-    "test": "node --experimental-vm-modules test/frontend-check.mjs"
+    "test": "node --experimental-vm-modules test/frontend-check.mjs",
+    "build:theme": "node scripts/build-theme-worker.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "gifenc": "1.0.3",
+    "gifuct-js": "2.1.2"
   }
 }

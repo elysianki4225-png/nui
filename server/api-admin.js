@@ -67,7 +67,7 @@ export function registerAdminRoutes(h, ctx) {
       active24h: users.filter((u) => u.lastSeen >= dayAgo).length,
       active7d: users.filter((u) => u.lastSeen >= weekAgo).length,
       new24h: users.filter((u) => u.createdAt >= dayAgo).length,
-      storageReady: pool.bots().length > 0,
+      storageReady: pool.ready(),
       telegram: pool.stats(),
       system: systemInfo(),
       recentAudit: store.state.audit.slice(-12).reverse(),
@@ -244,6 +244,7 @@ export function registerAdminRoutes(h, ctx) {
     requireAdmin(req);
     const b = store.state.bots.find((x) => x.id === params.id);
     if (!b) throw new HttpError(404, '机器人不存在', 'NOT_FOUND');
+    if (pool.references().some(x => x.ref.botId === params.id) || (store.state.settings.storageCleanup || []).some(x => x.botId === params.id)) throw new HttpError(409, '该机器人仍有文件或待清理副本，请先迁移并完成清理', 'BOT_IN_USE');
     store.log({ t: 'bot.remove', id: params.id });
     pool.syncWorkers();
     store.audit(store.state.admin?.username || 'admin', 'bot.remove', `移除机器人 @${b.username || b.name}`);

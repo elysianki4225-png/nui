@@ -1,3 +1,5 @@
+import { renderStorage, renderAppearance } from './customize.js';
+import { loadAppearance } from '/assets/js/appearance.js';
 import {
   h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PATCH, DEL, ApiError,
@@ -9,7 +11,7 @@ const S = { view: 'loading', page: 'overview', status: null, username: null, el:
 
 boot();
 async function boot() {
-  initTheme(); initRipple(); loadSprite();
+  initTheme(); initRipple(); loadSprite(); loadAppearance(true);
   try { S.status = await GET('/api/admin/status'); } catch (e) { toast('无法连接服务器: ' + e.message, { type: 'error' }); }
   if (S.status?.setupRequired) setView('setup');
   else if (S.status?.loggedIn) setView('main');
@@ -17,6 +19,7 @@ async function boot() {
 }
 function setView(v) { S.view = v; render(); }
 function render() {
+  S.pageCleanup?.(); S.pageCleanup = null;
   clear($app);
   if (S.view === 'setup') renderSetup();
   else if (S.view === 'login') renderLogin();
@@ -95,6 +98,8 @@ const PAGES = [
   { id: 'domain', icon: 'language', label: '域名' },
   { id: 'frontend', icon: 'devices', label: '前端/跨域' },
   { id: 'ads', icon: 'sell', label: '广告' },
+  { id: 'storage', icon: 'storage', label: '存储' },
+  { id: 'appearance', icon: 'palette', label: '主题' },
   { id: 'settings', icon: 'settings', label: '设置' },
   { id: 'audit', icon: 'history', label: '审计' },
 ];
@@ -157,6 +162,7 @@ function goPage(page) {
 }
 
 function renderPage() {
+  S.pageCleanup?.(); S.pageCleanup = null;
   const c = S.el.content;
   clear(c);
   const scroll = h('div', { class: 'admin-content' });
@@ -164,7 +170,8 @@ function renderPage() {
   scroll.append(page);
   c.append(scroll);
   S.el.page = page;
-  ({ overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
+  const cleanup = ({ storage: renderStorage, appearance: renderAppearance, overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
+  if (typeof cleanup === 'function') S.pageCleanup = cleanup;
 }
 
 function pageHead(title, ...actions) {
