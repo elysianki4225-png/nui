@@ -300,3 +300,21 @@
 .ad-card img { width: 100%; height: 74px; object-fit: cover; display: block; background: var(--md-surface-container-highest); }
 .ad-card .ad-title { font-size: 12px; padding: 0 8px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-frame { width: 100%; min-height: 90px; border: none; border-radius: var(--md-shape-sm); background: transparent; display: block; }
+
+/* Domain setup: keep long hosts and controls inside narrow mobile panels. */
+.domain-page { min-width: 0; }
+.domain-page .panel-head { flex-wrap: wrap; gap: 8px; }
+.domain-page .panel-head h3 { flex: 1 1 140px; }
+.domain-page .kv-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.domain-page .kv, .domain-page .tf, .domain-page .tf-box { min-width: 0; }
+.domain-page .editor-field { display: flex; flex-direction: column; margin: 18px 0; }
+.domain-page .tf-helper { display: block; margin-top: 6px; line-height: 1.5; }
+.domain-page .segmented { display: flex; flex-wrap: wrap; height: auto; gap: 4px; border: 0; }
+.domain-page .segmented button { flex: 1 1 120px; border: 1px solid var(--md-outline); border-radius: 12px; min-height: 44px; white-space: normal; }
+.domain-page .auth-note { align-items: flex-start; line-height: 1.6; overflow-wrap: anywhere; }
+.domain-page .auth-note > .icon { flex-shrink: 0; }
+.domain-page .chip-row { flex-wrap: wrap; }
+.domain-page .domain-advanced summary { cursor: pointer; padding: 8px 0; font-weight: 500; }
+.domain-page .domain-advanced[open] summary { margin-bottom: 20px; }
+.domain-page .domain-advanced .panel { padding: 0; border: 0; box-shadow: none; margin-top: 24px; }
+.domain-page .mono { overflow-wrap: anywhere; }

@@ -1,0 +1,19 @@
+// Optional DOM regression: npm install --prefix /tmp/nui-ui-test jsdom@24
+// NUI_JSDOM_MODULE=/tmp/nui-ui-test/node_modules/jsdom node test/domain-ui.cjs
+const {JSDOM}=require(process.env.NUI_JSDOM_MODULE || 'jsdom'); const fs=require('fs'); const vm=require('vm'); const assert=require('assert');
+const dom=new JSDOM('<main></main>'); const document=dom.window.document;
+const source=fs.readFileSync(require('node:path').join(__dirname, '../web/admin/app.js'),'utf8');
+const core=fs.readFileSync(require('node:path').join(__dirname, '../web/assets/js/core.js'),'utf8');
+const settings={mode:'domain', userHost:'m.example.com',cdn:'none',sslMode:'auto',cfHttpPort:80,cfHttpsPort:443};
+const ctx={document, console, GET:async()=>({settings,serverIp:'1.2.3.4',urls:{userUrl:'https://m.example.com',adminUrl:'https://m.example.com/admin'},canApply:true}),pageHead:()=>document.createElement('h2'),loadingEl:()=>document.createElement('aside'),icon:()=>document.createElement('i'), toast:()=>{},renderPage:()=>{},copyText:()=>{}};
+vm.createContext(ctx); vm.runInContext(core.slice(core.indexOf('export function h('),core.indexOf('// ---------- 图标')).replaceAll('export ',''),ctx);
+vm.runInContext(source.slice(source.indexOf('async function renderDomain(page)'),source.indexOf('// ============================ 前端 / 跨域')),ctx);
+(async()=>{await ctx.renderDomain(document.querySelector('main')); const click=t=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent===t);assert(b,t);b.click();};
+assert(!document.querySelector('details').open); assert(!document.body.textContent.includes('null'));
+click('Cloudflare 小黄云');assert(document.body.textContent.includes('当前为简易连接')); assert(document.querySelector('details .domain-technical'));
+click('严格 · Strict'); const areas=document.querySelectorAll('textarea');areas[0].value='CERT';areas[0].dispatchEvent(new dom.window.Event('input'));areas[1].value='KEY';areas[1].dispatchEvent(new dom.window.Event('input'));
+click('加密 · Full');assert.equal(document.querySelectorAll('textarea')[0].value,'CERT');assert.equal(document.querySelectorAll('textarea')[1].value,'KEY');
+const input=[...document.querySelectorAll('input')].find(i=>i.value==='m.example.com');input.value='new.example.com';input.dispatchEvent(new dom.window.Event('input'));assert(document.querySelector('.domain-dns-help').textContent.includes('new.example.com'));
+assert.equal(document.querySelector('input[type=password]').getAttribute('autocomplete'),'off');
+click('直连（无 CDN）');assert(!document.querySelector('textarea'));assert(!document.body.textContent.includes('null'));
+console.log('Domain UI: collapse, CDN defaults, certificate persistence, live DNS help, secret masking, no null text PASS');})().catch(e=>{console.error(e);process.exitCode=1});

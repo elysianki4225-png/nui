@@ -568,8 +568,9 @@ function asyncSeg(options, current, apply) {
 async function renderDomain(page) {
   page.append(pageHead('域名管理', h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: () => renderPage() }, icon('refresh'), '刷新')));
   page.append(h('div', { class: 'auth-note', style: { marginBottom: '16px' } }, icon('info'),
-    h('span', {}, '即使部署时用的是 nip.io，也可在这里随时换成自己的域名。支持 Cloudflare 小黄云与第三方 CDN，加密可选 Flexible / Full / Strict，回源端口可自定义（含冷门端口）。')));
-  const wrap = h('div');
+    h('span', {}, '选择访问方式，填写域名后保存。已有 nip.io 地址也能随时更换；端口、证书等选项在高级设置中。')));
+  const wrap = h('div', { class: 'domain-page' });
+  let advancedOpen = false;
   page.append(wrap, loadingEl());
   let data;
   try { data = await GET('/api/admin/domain'); } catch (e) { toast(e.message, { type: 'error' }); return; }
@@ -593,7 +594,7 @@ async function renderDomain(page) {
     statusPanel.append(
       h('div', { class: 'panel-head' }, icon('public'), h('h3', {}, '当前访问'),
         h('span', { class: `badge ${d.canApply ? 'success' : 'warning'}` }, modeLabel),
-        h('span', { class: `badge ${d.haveCert ? 'success' : 'neutral'}` }, d.haveCert ? '已装回源证书' : '无回源证书')),
+        d.settings.cdn !== 'none' ? h('span', { class: `badge ${d.haveCert ? 'success' : 'neutral'}` }, d.haveCert ? '已装回源证书' : 'HTTP 回源无需证书') : null),
       h('div', { class: 'kv-grid' }, urlRow('用户界面', d.urls.userUrl), urlRow('管理界面', d.urls.adminUrl)));
     if (!d.canApply) statusPanel.append(h('div', { class: 'auth-note mt-16' }, icon('warning'),
       h('span', {}, '当前未启用特权自动应用：保存后后端会热更新，但 Caddy 与证书需按返回的 Caddyfile 手动应用。用一键脚本部署可启用自动应用。')));
@@ -612,7 +613,7 @@ async function renderDomain(page) {
   }
   function text(key, placeholder, opts = {}) {
     const input = h('input', { class: 'tf-input', placeholder: ' ', value: f[key] ?? '', ...opts });
-    input.addEventListener('input', () => { f[key] = input.value; });
+    input.addEventListener('input', () => { f[key] = input.value; if (key === 'userHost' || key === 'adminHost') { clear(dnsResult); clear(diagResult); const help = formWrap.querySelector('.domain-dns-help'); if (help) help.replaceWith(dnsHelp()); } });
     return input;
   }
   function num(key, min, max) {
@@ -632,7 +633,7 @@ async function renderDomain(page) {
     const isV6 = ip.includes(':');
     const rows = [
       ['类型', isV6 ? 'AAAA' : 'A'],
-      ['主机记录', f.userHost || '@'],
+      ['完整域名', f.userHost || '@'],
       ['记录值', ip],
       ['TTL', '自动 / 600'],
     ];
@@ -640,10 +641,10 @@ async function renderDomain(page) {
     for (const [k, v] of rows) {
       grid.append(h('div', { class: 'kv' }, h('div', { class: 'k' }, k),
         h('div', { class: 'v row gap-4', style: { alignItems: 'center' } }, h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, v),
-          k === '记录值' || k === '主机记录' ? h('button', { class: 'icon-btn stateful', style: { width: '28px', height: '28px' }, title: '复制', onClick: () => copyText(v) }, icon('content_copy', 'sm')) : null)));
+          k === '记录值' || k === '完整域名' ? h('button', { class: 'icon-btn stateful', style: { width: '28px', height: '28px' }, title: '复制', onClick: () => copyText(v) }, icon('content_copy', 'sm')) : null)));
     }
-    return h('div', {},
-      h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, f.cdn === 'cloudflare' ? '在 DNS 服务商添加以下记录，并开启代理（小黄云）。' : '在 DNS 服务商添加以下记录（直连模式不开代理）。'),
+    return h('div', { class: 'domain-dns-help' },
+      h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, f.cdn === 'cloudflare' ? '添加以下 DNS 记录并开启小黄云。主机记录只填域名前缀（例如 a），根域名填 @。' : f.cdn === 'custom' ? '按 CDN 厂商要求配置 CNAME，并将回源地址设为下方 IP。' : '在 DNS 服务商添加以下记录，关闭代理。'),
       grid);
   }
 
@@ -662,8 +663,8 @@ async function renderDomain(page) {
     return h('div', {},
       chipRow('Cloudflare 支持的 HTTP 回源端口', http, 'cfHttpPort'),
       chipRow('Cloudflare 支持的 HTTPS 回源端口', https, 'cfHttpsPort'),
-      (badHttp || badHttps) ? h('div', { class: 'auth-note', style: { marginTop: '4px' } }, icon('warning'),
-        h('span', {}, '当前含 Cloudflare 默认不代理的端口，小黄云下可能无法访问；请改用上方受支持端口，或确认已开通 Spectrum。')) : null);
+      (badHttp || badHttps || f.cfHttpPort !== 80 || f.cfHttpsPort !== 443) ? h('div', { class: 'auth-note', style: { marginTop: '4px' } }, icon('warning'),
+        h('span', {}, '非标准回源端口需在 CDN 配置回源端口规则；仅在此修改不会自动更改 Cloudflare 的回源目标。')) : null);
   }
 
   function renderForm() {
@@ -671,22 +672,22 @@ async function renderDomain(page) {
     const cdnOn = f.cdn !== 'none';
     // 域名 panel
     const domainPanel = h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '访问域名')),
+      h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '2. 填写访问域名')),
       h('div', { style: { marginBottom: '12px' } }, seg([['domain', '自定义域名'], ['ip', 'nip.io / IP']], () => f.mode, (v) => { f.mode = v; })),
       field('用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
       f.mode === 'ip' ? field('管理子域名', text('adminHost', 'admin.example.com', { spellcheck: 'false' }), 'IP 模式下管理端使用独立子域名') : null,
       h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
         h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析'),
         h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: runProbe }, icon('fact_check'), '一键诊断（CDN / 证书 / 回源）')),
-      dnsResult, dnsHelp(), diagResult);
+      dnsResult, f.mode === 'domain' ? dnsHelp() : h('p', { class: 'muted' }, '保留自动生成的地址，无需手动添加 DNS 记录。'), diagResult);
     // CDN panel
     const cdnPanel = h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, 'CDN 代理')),
-      h('div', { style: { marginBottom: '12px' } }, seg([['none', '直连（无 CDN）'], ['cloudflare', 'Cloudflare 小黄云'], ['custom', '第三方 CDN']], () => f.cdn, (v) => { f.cdn = v; if (v === 'cloudflare') f.realIpHeader = 'cf-connecting-ip'; else if (v === 'custom') f.realIpHeader = 'x-forwarded-for'; })),
+      h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, '1. 选择访问方式')),
+      h('div', { style: { marginBottom: '12px' } }, seg([['none', '直连（无 CDN）'], ['cloudflare', 'Cloudflare 小黄云'], ['custom', '第三方 CDN']], () => f.cdn, (v) => { f.cdn = v; if (v !== 'none' && !['flexible', 'full', 'strict'].includes(f.sslMode)) f.sslMode = data.haveCert ? 'strict' : 'flexible'; if (v === 'cloudflare') f.realIpHeader = 'cf-connecting-ip'; else if (v === 'custom') f.realIpHeader = 'x-forwarded-for'; })),
       f.cdn === 'custom' ? field('CDN 名称', text('cdnName', '例如 阿里云 CDN / 腾讯云 EdgeOne')) : null,
-      cdnOn ? h('div', {},
+      cdnOn ? h('div', { class: 'domain-technical' },
         h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, '加密模式（CDN 到源站）'),
-        h('div', { style: { marginBottom: '12px' } }, seg([['flexible', 'Flexible（HTTP 回源）'], ['full', 'Full'], ['strict', 'Strict']], () => f.sslMode, (v) => { f.sslMode = v; })),
+        h('div', { style: { marginBottom: '12px' } }, seg([['flexible', '简易 · Flexible'], ['full', '加密 · Full'], ['strict', '严格 · Strict']], () => f.sslMode, (v) => { f.sslMode = v; })),
         h('div', { class: 'two-col' },
           field('回源 HTTP 端口', num('cfHttpPort', 1, 65535), 'Flexible 使用，默认 80'),
           field('回源 HTTPS 端口', num('cfHttpsPort', 1, 65535), 'Full/Strict 使用，默认 443，可填冷门端口')),
@@ -701,9 +702,9 @@ async function renderDomain(page) {
     // 证书 panel（仅 CDN）
     let certPanel = null;
     if (cdnOn) {
-      const certTa = h('textarea', { class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
+      const certTa = h('textarea', { value: f.certPem, class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
       certTa.addEventListener('input', () => { f.certPem = certTa.value; });
-      const keyTa = h('textarea', { class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
+      const keyTa = h('textarea', { value: f.keyPem, class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
       keyTa.addEventListener('input', () => { f.keyPem = keyTa.value; });
       certPanel = h('div', { class: 'panel' },
         h('div', { class: 'panel-head' }, icon('lock'), h('h3', {}, '回源证书（Full / Strict）'),
@@ -712,7 +713,7 @@ async function renderDomain(page) {
         field('证书 PEM（certificate）', certTa),
         field('私钥 PEM（private key）', keyTa),
         f.cdn === 'cloudflare' ? h('div', {},
-          field('Cloudflare API Token（可选，自动签发）', text('cfApiToken', '需 SSL and Certificates 权限', { spellcheck: 'false' })),
+          field('Cloudflare API Token（可选，自动签发）', text('cfApiToken', '需 SSL and Certificates 权限', { spellcheck: 'false', type: 'password', autocomplete: 'off' })),
           h('div', { class: 'row gap-8 wrap', style: { alignItems: 'center' } },
             h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: verifyToken }, icon('verified_user'), '验证 Token'),
             cfVerifyResult)) : null);
@@ -721,7 +722,17 @@ async function renderDomain(page) {
     const actions = h('div', { class: 'row end gap-8 wrap', style: { marginTop: '16px' } },
       h('button', { class: 'btn btn-outlined stateful', onClick: preview }, icon('description'), '预览 Caddyfile'),
       h('button', { class: 'btn btn-filled stateful', onClick: apply }, icon('save'), '应用更改'));
-    formWrap.append(domainPanel, cdnPanel, certPanel, actions);
+    const advanced = h('details', { class: 'domain-advanced panel', open: advancedOpen },
+      h('summary', {}, '高级设置 · 加密、端口、证书与防火墙'));
+    advanced.addEventListener('toggle', () => { if (advanced.isConnected) advancedOpen = advanced.open; });
+    const technical = cdnPanel.querySelector('.domain-technical');
+    if (technical) advanced.append(technical);
+    if (certPanel) advanced.append(certPanel);
+    advanced.append(actions.firstChild);
+    if (cdnOn) cdnPanel.append(h('p', { class: 'auth-note' }, icon('info'), h('span', {},
+      f.sslMode === 'flexible' ? '当前为简易连接：无需回源证书。请在 CDN 控制台将 SSL 模式设为 Flexible（源站链路为 HTTP）。需要全程加密时，在高级设置中选 Strict 并配置证书。' : `当前为 ${f.sslMode === 'strict' ? 'Strict' : 'Full'} 加密连接，请确保 CDN 控制台模式一致，并配置回源证书。`)));
+    formWrap.append(cdnPanel, domainPanel, advanced,
+      h('p', { class: 'muted md-body-s' }, '保存会重载代理；更换域名后需在新地址重新登录。CDN 控制台设置不会自动修改。'), actions);
   }
 
   async function checkDns() {
@@ -733,7 +744,7 @@ async function renderDomain(page) {
       dnsResult.append(h('span', { class: 'muted' }, '解析到：'), h('span', { class: 'mono' }, r.addresses.join(', ')),
         r.cloudflare ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, 'Cloudflare 边缘') : h('span', { class: 'badge neutral', style: { marginLeft: '8px' } }, '非 CF IP'),
         r.matchesServer === true ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, '指向本机') :
-        r.matchesServer === false ? h('span', { class: 'badge warning', style: { marginLeft: '8px' } }, '与本机 IP 不一致') : null);
+        r.matchesServer === false && !r.cloudflare && f.cdn === 'none' ? h('span', { class: 'badge warning', style: { marginLeft: '8px' } }, '与本机 IP 不一致') : null);
     } catch (e) { clear(dnsResult); dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); }
   }
 
@@ -752,11 +763,11 @@ async function renderDomain(page) {
     if (r.https) grid.append(line('HTTPS 边缘', r.https.ok, r.https.ok ? `${r.https.status} · ${r.https.latencyMs}ms${r.https.viaCloudflare ? ' · 经 Cloudflare' : ''}` : (r.https.error || `HTTP ${r.https.status}`)));
     if (r.http) grid.append(line('HTTP 边缘', r.http.ok, r.http.ok ? `${r.http.status} · ${r.http.latencyMs}ms` : (r.http.error || `HTTP ${r.http.status}`)));
     if (r.tls) grid.append(line('边缘证书', r.tls.daysLeft > 15, `${r.tls.issuer || r.tls.subject} · 剩余 ${r.tls.daysLeft} 天`));
-    if (r.origin) grid.append(line('本机回源', r.origin.ok, r.origin.ok ? `正常 · ${r.origin.latencyMs}ms` : (r.origin.error || '失败')));
+    if (r.origin) grid.append(line('后端进程自检', r.origin.ok, r.origin.ok ? `正常 · ${r.origin.latencyMs}ms` : (r.origin.error || '失败')));
     diagResult.append(
       h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, '诊断结果'),
       grid,
-      h('div', { class: 'auth-note', style: { marginTop: '8px' } }, icon('info'), h('span', {}, (r.hints || []).join(' '))));
+      h('div', { class: 'auth-note', style: { marginTop: '8px' } }, icon('info'), h('div', {}, ...(r.hints || []).map(hint => h('p', { style: { margin: '4px 0' } }, hint)))));
   }
 
   async function verifyToken() {
@@ -783,6 +794,11 @@ async function renderDomain(page) {
   }
 
   async function apply() {
+    if (f.cdn !== 'none' && f.sslMode !== 'flexible' && !data.haveCert && !(f.certPem.trim() && f.keyPem.trim()) && !f.cfApiToken.trim()) {
+      advancedOpen = true; renderForm();
+      toast('加密回源需要证书：请配置证书或选择简易 Flexible 模式', { type: 'error' }); return;
+    }
+    if (!!f.certPem.trim() !== !!f.keyPem.trim()) { toast('请同时填写证书和私钥', { type: 'error' }); return; }
     const ok = await confirmDialog({ title: '应用域名更改', message: '将更新域名 / CDN / 回源端口并重载代理。若域名发生变化，当前会话会失效，需要到新域名重新登录。确定继续？', confirmLabel: '应用', icon: 'language' });
     if (!ok) return;
     clear(resultWrap);
