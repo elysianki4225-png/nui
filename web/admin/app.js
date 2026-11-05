@@ -541,6 +541,29 @@ async function renderBots(page) {
 }
 function maskToken(t) { if (!t) return ''; return t.length <= 12 ? t.slice(0, 3) + '•••' : t.slice(0, 6) + '••••••' + t.slice(-4); }
 
+// 异步分段选择器：先捕获按钮引用（避免 await 后 e.currentTarget 为 null），
+// 乐观更新选中态，失败回滚，busy 防重复点击。
+function asyncSeg(options, current, apply) {
+  const el = h('div', { class: 'segmented', style: { flexWrap: 'wrap' } });
+  const btns = new Map();
+  const mark = (id) => { for (const [k, b] of btns) b.classList.toggle('selected', k === id); };
+  let busy = false;
+  for (const [id, label] of options) {
+    const btn = h('button', { class: id === current ? 'selected' : '' }, label);
+    btn.addEventListener('click', async () => {
+      if (busy || btn.classList.contains('selected')) return;
+      busy = true;
+      const prev = [...btns.entries()].find(([, b]) => b.classList.contains('selected'))?.[0];
+      mark(id);
+      try { await apply(id); }
+      catch (err) { mark(prev); toast(err.message, { type: 'error' }); }
+      busy = false;
+    });
+    btns.set(id, btn); el.append(btn);
+  }
+  return el;
+}
+
 // ============================ 域名 / CDN 管理 ============================
 async function renderDomain(page) {
   page.append(pageHead('域名管理', h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: () => renderPage() }, icon('refresh'), '刷新')));
@@ -599,6 +622,50 @@ async function renderDomain(page) {
   }
 
   const dnsResult = h('div', { class: 'md-body-s', style: { marginTop: '8px' } });
+  const diagResult = h('div', { style: { marginTop: '12px' } });
+  const cfVerifyResult = h('span', { class: 'md-body-s' });
+
+  // DNS 记录助手：根据本机公网 IP 给出建议记录
+  function dnsHelp() {
+    const ip = data.serverIp;
+    if (!ip) return h('p', { class: 'muted md-body-s' }, '未能自动获取本机公网 IP，可在 VPS 上运行 curl ip.sb 查看，并据此添加 DNS 记录。');
+    const isV6 = ip.includes(':');
+    const rows = [
+      ['类型', isV6 ? 'AAAA' : 'A'],
+      ['主机记录', f.userHost || '@'],
+      ['记录值', ip],
+      ['TTL', '自动 / 600'],
+    ];
+    const grid = h('div', { class: 'kv-grid' });
+    for (const [k, v] of rows) {
+      grid.append(h('div', { class: 'kv' }, h('div', { class: 'k' }, k),
+        h('div', { class: 'v row gap-4', style: { alignItems: 'center' } }, h('span', { class: 'mono', style: { wordBreak: 'break-all' } }, v),
+          k === '记录值' || k === '主机记录' ? h('button', { class: 'icon-btn stateful', style: { width: '28px', height: '28px' }, title: '复制', onClick: () => copyText(v) }, icon('content_copy', 'sm')) : null)));
+    }
+    return h('div', {},
+      h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, f.cdn === 'cloudflare' ? '在 DNS 服务商添加以下记录，并开启代理（小黄云）。' : '在 DNS 服务商添加以下记录（直连模式不开代理）。'),
+      grid);
+  }
+
+  // Cloudflare 受支持回源端口快选 + 非支持端口提示
+  function portPicks() {
+    const http = data.cfPorts?.http || [80, 8080, 8880, 2052, 2082, 2086, 2095];
+    const https = data.cfPorts?.https || [443, 2053, 2083, 2087, 2096, 8443];
+    const chipRow = (label, ports, key) => h('div', { style: { margin: '4px 0 8px' } },
+      h('div', { class: 'md-body-s muted', style: { marginBottom: '4px' } }, label),
+      h('div', { class: 'chip-row' }, ...ports.map((p) => h('button', {
+        class: `chip stateful ${f[key] === p ? 'selected' : ''}`,
+        onClick: () => { f[key] = p; renderForm(); },
+      }, String(p)))));
+    const badHttp = !http.includes(f.cfHttpPort);
+    const badHttps = !https.includes(f.cfHttpsPort);
+    return h('div', {},
+      chipRow('Cloudflare 支持的 HTTP 回源端口', http, 'cfHttpPort'),
+      chipRow('Cloudflare 支持的 HTTPS 回源端口', https, 'cfHttpsPort'),
+      (badHttp || badHttps) ? h('div', { class: 'auth-note', style: { marginTop: '4px' } }, icon('warning'),
+        h('span', {}, '当前含 Cloudflare 默认不代理的端口，小黄云下可能无法访问；请改用上方受支持端口，或确认已开通 Spectrum。')) : null);
+  }
+
   function renderForm() {
     clear(formWrap);
     const cdnOn = f.cdn !== 'none';
@@ -609,8 +676,9 @@ async function renderDomain(page) {
       field('用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
       f.mode === 'ip' ? field('管理子域名', text('adminHost', 'admin.example.com', { spellcheck: 'false' }), 'IP 模式下管理端使用独立子域名') : null,
       h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
-        h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析')),
-      dnsResult);
+        h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析'),
+        h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: runProbe }, icon('fact_check'), '一键诊断（CDN / 证书 / 回源）')),
+      dnsResult, dnsHelp(), diagResult);
     // CDN panel
     const cdnPanel = h('div', { class: 'panel' },
       h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, 'CDN 代理')),
@@ -622,6 +690,7 @@ async function renderDomain(page) {
         h('div', { class: 'two-col' },
           field('回源 HTTP 端口', num('cfHttpPort', 1, 65535), 'Flexible 使用，默认 80'),
           field('回源 HTTPS 端口', num('cfHttpsPort', 1, 65535), 'Full/Strict 使用，默认 443，可填冷门端口')),
+        f.cdn === 'cloudflare' ? portPicks() : null,
         h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' },
           (() => { const sel = h('select', { class: 'tf-input' }, ...[['cf-connecting-ip', 'CF-Connecting-IP（Cloudflare）'], ['x-forwarded-for', 'X-Forwarded-For（首个 IP）'], ['x-real-ip', 'X-Real-IP'], ['true-client-ip', 'True-Client-IP']].map(([v, l]) => h('option', { value: v, selected: f.realIpHeader === v }, l))); sel.addEventListener('change', () => { f.realIpHeader = sel.value; }); return sel; })(),
           h('span', { class: 'tf-label' }, '真实访客 IP 头'))),
@@ -642,7 +711,11 @@ async function renderDomain(page) {
         h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, 'Strict 需要受 CDN 信任的回源证书。Cloudflare 可在 SSL/TLS → Origin Server 创建 Origin CA 证书后粘贴到下方；或填写 API Token 自动签发。留空则沿用已安装证书或仅用 Flexible。'),
         field('证书 PEM（certificate）', certTa),
         field('私钥 PEM（private key）', keyTa),
-        f.cdn === 'cloudflare' ? field('Cloudflare API Token（可选，自动签发）', text('cfApiToken', '需 SSL and Certificates 权限', { spellcheck: 'false' })) : null);
+        f.cdn === 'cloudflare' ? h('div', {},
+          field('Cloudflare API Token（可选，自动签发）', text('cfApiToken', '需 SSL and Certificates 权限', { spellcheck: 'false' })),
+          h('div', { class: 'row gap-8 wrap', style: { alignItems: 'center' } },
+            h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: verifyToken }, icon('verified_user'), '验证 Token'),
+            cfVerifyResult)) : null);
     }
     // 操作
     const actions = h('div', { class: 'row end gap-8 wrap', style: { marginTop: '16px' } },
@@ -658,8 +731,43 @@ async function renderDomain(page) {
       clear(dnsResult);
       if (r.error) { dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, r.error)); return; }
       dnsResult.append(h('span', { class: 'muted' }, '解析到：'), h('span', { class: 'mono' }, r.addresses.join(', ')),
-        r.cloudflare ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, 'Cloudflare 边缘') : h('span', { class: 'badge neutral', style: { marginLeft: '8px' } }, '非 CF IP'));
+        r.cloudflare ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, 'Cloudflare 边缘') : h('span', { class: 'badge neutral', style: { marginLeft: '8px' } }, '非 CF IP'),
+        r.matchesServer === true ? h('span', { class: 'badge success', style: { marginLeft: '8px' } }, '指向本机') :
+        r.matchesServer === false ? h('span', { class: 'badge warning', style: { marginLeft: '8px' } }, '与本机 IP 不一致') : null);
     } catch (e) { clear(dnsResult); dnsResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); }
+  }
+
+  // 一键诊断：DNS / 边缘 HTTPS / TLS 证书 / 本机回源
+  async function runProbe() {
+    clear(diagResult); diagResult.append(h('span', { class: 'muted md-body-s' }, '诊断中（最多约 10 秒）…'));
+    let r;
+    try { r = await POST('/api/admin/domain/probe', { host: f.userHost }); }
+    catch (e) { clear(diagResult); diagResult.append(h('span', { style: { color: 'var(--md-error)' } }, e.message)); return; }
+    clear(diagResult);
+    const line = (label, ok, detail) => h('div', { class: 'kv' },
+      h('div', { class: 'k row gap-4', style: { alignItems: 'center' } }, icon(ok ? 'check_circle' : 'error', 'sm'), label),
+      h('div', { class: 'v mono md-body-s', style: { wordBreak: 'break-all', color: ok ? 'var(--md-success)' : 'var(--md-error)' } }, detail));
+    const grid = h('div', { class: 'kv-grid' });
+    if (r.dns) grid.append(line('DNS 解析', !r.dns.error, r.dns.error || r.dns.addresses.join(', ')));
+    if (r.https) grid.append(line('HTTPS 边缘', r.https.ok, r.https.ok ? `${r.https.status} · ${r.https.latencyMs}ms${r.https.viaCloudflare ? ' · 经 Cloudflare' : ''}` : (r.https.error || `HTTP ${r.https.status}`)));
+    if (r.http) grid.append(line('HTTP 边缘', r.http.ok, r.http.ok ? `${r.http.status} · ${r.http.latencyMs}ms` : (r.http.error || `HTTP ${r.http.status}`)));
+    if (r.tls) grid.append(line('边缘证书', r.tls.daysLeft > 15, `${r.tls.issuer || r.tls.subject} · 剩余 ${r.tls.daysLeft} 天`));
+    if (r.origin) grid.append(line('本机回源', r.origin.ok, r.origin.ok ? `正常 · ${r.origin.latencyMs}ms` : (r.origin.error || '失败')));
+    diagResult.append(
+      h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, '诊断结果'),
+      grid,
+      h('div', { class: 'auth-note', style: { marginTop: '8px' } }, icon('info'), h('span', {}, (r.hints || []).join(' '))));
+  }
+
+  async function verifyToken() {
+    clear(cfVerifyResult); cfVerifyResult.append(h('span', { class: 'muted' }, '验证中…'));
+    try {
+      const r = await POST('/api/admin/domain/cf-verify', { token: f.cfApiToken });
+      clear(cfVerifyResult);
+      cfVerifyResult.append(r.ok
+        ? h('span', { class: 'badge success' }, `Token 有效（${r.status}）`)
+        : h('span', { class: 'badge warning' }, r.error || 'Token 无效'));
+    } catch (e) { clear(cfVerifyResult); cfVerifyResult.append(h('span', { class: 'badge warning' }, e.message)); }
   }
 
   async function preview() {
@@ -733,9 +841,8 @@ async function renderFrontend(page) {
   page.querySelector('.empty-state')?.remove();
 
   // 跨域模式
-  const modeSeg = h('div', { class: 'segmented' },
-    ...[['off', '关闭跨域'], ['whitelist', '白名单'], ['open', '允许所有']].map(([id, label]) =>
-      h('button', { class: data.mode === id ? 'selected' : '', onClick: async (e) => { try { await PATCH('/api/admin/cors', { mode: id }); [...modeSeg.children].forEach((b) => b.classList.remove('selected')); e.currentTarget.classList.add('selected'); toast('跨域模式已更新', { type: 'success' }); } catch (err) { toast(err.message, { type: 'error' }); } } }, label)));
+  const modeSeg = asyncSeg([['off', '关闭跨域'], ['whitelist', '白名单'], ['open', '允许所有']], data.mode,
+    async (id) => { await PATCH('/api/admin/cors', { mode: id }); toast('跨域模式已更新', { type: 'success' }); });
   // 白名单
   const listWrap = h('div');
   const addBtn = h('button', { class: 'btn btn-filled btn-sm stateful', onClick: openAdd }, icon('add'), '批量添加');
@@ -790,9 +897,8 @@ async function renderAds(page) {
   const a = data.ads;
   const enabled = h('input', { type: 'checkbox', checked: a.enabled });
   enabled.addEventListener('change', async () => { try { await PATCH('/api/admin/ads', { enabled: enabled.checked }); toast(enabled.checked ? '广告已开启' : '广告已关闭', { type: 'success' }); } catch (e) { toast(e.message, { type: 'error' }); } });
-  const modeSeg = h('div', { class: 'segmented' },
-    ...[['custom', '自有广告'], ['html', '广告网络代码']].map(([id, label]) =>
-      h('button', { class: a.mode === id ? 'selected' : '', onClick: async (e) => { try { await PATCH('/api/admin/ads', { mode: id }); [...modeSeg.children].forEach((b) => b.classList.remove('selected')); e.currentTarget.classList.add('selected'); toast('广告模式已更新', { type: 'success' }); } catch (err) { toast(err.message, { type: 'error' }); } } }, label)));
+  const modeSeg = asyncSeg([['custom', '自有广告'], ['html', '广告网络代码']], a.mode,
+    async (id) => { await PATCH('/api/admin/ads', { mode: id }); toast('广告模式已更新', { type: 'success' }); });
   // 自有广告列表
   const listWrap = h('div');
   async function loadItems() {

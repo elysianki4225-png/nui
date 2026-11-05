@@ -41,6 +41,7 @@ BACKEND_PORT="8787"
 SERVICE="nui-memo"
 CF_CERT_FILE="$CONF_DIR/cf-origin.pem"
 CF_KEY_FILE="$CONF_DIR/cf-origin.key"
+PANEL_BIN_DIR="${NUI_BIN_DIR:-/usr/local/bin}"
 
 # ---------- 输出 ----------
 if [[ -t 1 ]]; then
@@ -422,6 +423,9 @@ fetch_app() {
   fi
   cp -r "$src/server" "$APP_DIR/server"
   cp -r "$src/web" "$APP_DIR/web"
+  # 附带安装器与 SSH 面板脚本，供 n-ui 面板「更新 / 卸载」复用
+  [[ -d "$src/scripts" ]] && cp -r "$src/scripts" "$APP_DIR/scripts"
+  [[ -f "$src/install.sh" ]] && cp "$src/install.sh" "$APP_DIR/install.sh"
   rm -rf "$APP_DIR/server.old" "$APP_DIR/web.old"
   [[ -n "${FETCH_TMP:-}" ]] && rm -rf "$FETCH_TMP"
   ok "程序已部署到 $APP_DIR"
@@ -440,6 +444,7 @@ write_config() {
   "mode": "${MODE}",
   "userHost": "${USER_HOST}",
   "adminHost": "${ADMIN_HOST}",
+  "publicIp": "${PUBLIC_IP:-}",
   "trustProxy": true,
   "cloudflare": $([[ $CLOUDFLARE -eq 1 ]] && echo true || echo false),
   "cdn": "$([[ $CLOUDFLARE -eq 1 ]] && echo cloudflare || echo none)",
@@ -461,13 +466,14 @@ EOF
     ok "配置已创建: $CONF_FILE"
   else
     # 更新域名 / Cloudflare 字段（保留其余）
-    MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" \
+    MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" PUBLIC_IP="${PUBLIC_IP:-}" \
     CLOUDFLARE="$CLOUDFLARE" CF_ONLY="$CF_ONLY" CF_HTTP_PORT="${CF_HTTP_PORT:-80}" CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
     "$APP_DIR/node/bin/node" -e '
       const fs=require("fs");const f=process.argv[1];
       const c=JSON.parse(fs.readFileSync(f,"utf8"));
       const cf=process.env.CLOUDFLARE==="1";
       c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST;
+      if(process.env.PUBLIC_IP)c.publicIp=process.env.PUBLIC_IP;
       c.cloudflare=cf;c.cdn=cf?"cloudflare":"none";c.cdnName=cf?"Cloudflare":"";
       c.sslMode=cf?(c.sslMode&&c.sslMode!=="auto"?c.sslMode:"flexible"):"auto";
       c.realIpHeader=cf?"cf-connecting-ip":"x-forwarded-for";
@@ -697,6 +703,7 @@ print_summary() {
   echo "   4. 如需换域名 / 套 CDN：管理界面「域名」页可随时修改（含 nip.io 换自定义域名）"
   echo
   echo "  常用命令:"
+  echo "   ${C_BOLD}SSH 面板:  sudo n-ui${C_RESET}  （大小写混写均可，数字菜单: 启动/停止/改密码/卸载/更新）"
   echo "   查看状态:  systemctl status ${SERVICE} caddy"
   echo "   查看日志:  journalctl -u ${SERVICE} -f"
   echo "   升级程序:  bash install.sh --update"
@@ -724,8 +731,36 @@ print_summary() {
 }
 
 # ---------- 卸载 ----------
+# ---------- SSH 管理面板（n-ui，大小写混写均可） ----------
+panel_aliases() {
+  local a b c
+  for a in n N; do for b in u U; do for c in i I; do
+    echo "${a}-${b}${c}"
+  done; done; done
+}
+install_panel() {
+  step "安装 SSH 管理面板 (n-ui)"
+  local src="$APP_DIR/scripts/n-ui.sh"
+  [[ -f "$src" ]] || src="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/scripts/n-ui.sh"
+  if [[ ! -f "$src" ]]; then warn "未找到 n-ui.sh，跳过面板安装"; return 0; fi
+  mkdir -p "$PANEL_BIN_DIR"
+  cp "$src" "$PANEL_BIN_DIR/n-ui"
+  chmod 0755 "$PANEL_BIN_DIR/n-ui"
+  local name
+  while read -r name; do
+    [[ "$name" == "n-ui" ]] && continue
+    ln -sf "$PANEL_BIN_DIR/n-ui" "$PANEL_BIN_DIR/$name"
+  done < <(panel_aliases)
+  ok "面板已安装: n-ui（大小写混写均可）。SSH 中运行 sudo n-ui"
+}
+remove_panel() {
+  local name
+  while read -r name; do rm -f "$PANEL_BIN_DIR/$name"; done < <(panel_aliases)
+}
+
 uninstall() {
   step "卸载 备忘录"
+  remove_panel
   systemctl stop ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
   systemctl disable ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
   rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service \
@@ -772,6 +807,7 @@ main() {
   write_domain_apply
   setup_firewall
   start_services
+  install_panel
   health_check
   print_summary
 }

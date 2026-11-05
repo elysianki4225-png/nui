@@ -9,6 +9,9 @@ import { execFileSync } from 'node:child_process';
 export const CDN_PROVIDERS = ['none', 'cloudflare', 'custom'];
 export const SSL_MODES = ['auto', 'flexible', 'full', 'strict'];
 export const REAL_IP_HEADERS = ['cf-connecting-ip', 'x-forwarded-for', 'x-real-ip', 'true-client-ip'];
+// Cloudflare 小黄云默认代理的回源端口（其它端口需 Spectrum/企业版，否则不生效）
+export const CF_PROXY_HTTP_PORTS = [80, 8080, 8880, 2052, 2082, 2086, 2095];
+export const CF_PROXY_HTTPS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 
 // 系统路径（可被环境变量覆盖，便于测试 / 非标准安装）
 export const SYS = {
@@ -99,6 +102,10 @@ export function normalizeDomain(input, base = {}) {
 
   if (cdn !== 'none' && (cfHttpPort !== 80 || cfHttpsPort !== 443)) {
     warnings.push(`回源端口为非标准端口（HTTP ${cfHttpPort} / HTTPS ${cfHttpsPort}），请在 CDN 的回源规则中把目标端口设为对应值。`);
+  }
+  if (cdn === 'cloudflare') {
+    if (!CF_PROXY_HTTP_PORTS.includes(cfHttpPort)) warnings.push(`Cloudflare 小黄云默认不代理 HTTP 端口 ${cfHttpPort}（支持：${CF_PROXY_HTTP_PORTS.join(', ')}），请改用受支持端口或确认已开通 Spectrum。`);
+    if (!CF_PROXY_HTTPS_PORTS.includes(cfHttpsPort)) warnings.push(`Cloudflare 小黄云默认不代理 HTTPS 端口 ${cfHttpsPort}（支持：${CF_PROXY_HTTPS_PORTS.join(', ')}），请改用受支持端口或确认已开通 Spectrum。`);
   }
   if (cdn === 'cloudflare' && sslMode === 'strict') warnings.push('Strict 模式需要有效的 Origin CA 证书（或受信任证书），否则回源会失败。');
   if (cdn !== 'none' && sslMode === 'flexible') warnings.push('Flexible 回源为 HTTP，源站已禁用强制 HTTPS 跳转以避免重定向循环。');

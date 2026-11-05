@@ -159,7 +159,11 @@ sudo bash install.sh --domain m.example.com --cloudflare --cf-only ...
 - **自定义回源端口**：HTTP / HTTPS 回源端口均可自定义，**冷门端口**也支持（配合 CDN 的回源端口规则）。
 - **回源证书**：粘贴 Origin CA 证书 + 私钥，或填 Cloudflare API Token 自动签发；Strict 无证书时自动回退 Flexible 并提示。
 - **真实访客 IP**：Cloudflare 默认 `CF-Connecting-IP`；第三方可选 `X-Forwarded-For` / `X-Real-IP` / `True-Client-IP`，限流与 IP 封禁据此识别。
-- **辅助工具**：DNS 解析检测（并判断是否落在 Cloudflare 边缘）、Caddyfile 预览、仅允许 CF IP 回源开关。
+- **DNS 记录助手**：自动推导本机公网 IP（安装时写入 `publicIp`，或从 nip.io 主机名解析），给出建议的 A/AAAA 记录（类型 / 主机记录 / 记录值 / TTL）并一键复制；套 CF 时提示开启小黄云。
+- **一键诊断**：一次检测 DNS 解析、边缘 HTTPS/HTTP 可达性与延迟、是否经由 Cloudflare、边缘证书颁发者与剩余有效期、本机回源自检，并给出针对性建议（如 SSL 模式与回源证书不匹配）。
+- **Cloudflare 端口快选**：列出 CF 默认代理的 HTTP/HTTPS 回源端口供一键选择；填了非支持端口会告警（需 Spectrum）。
+- **CF Token 验证**：填写 API Token 后可先验证有效性再用于自动签发。
+- **辅助工具**：DNS 解析检测（判断是否落在 Cloudflare 边缘 / 是否指向本机）、Caddyfile 预览、仅允许 CF IP 回源开关。
 
 应用机制：
 
@@ -228,9 +232,30 @@ sudo bash install.sh --domain m.example.com --cloudflare --cf-only ...
 
 ---
 
+## SSH 管理面板（n-ui）
+
+安装后在 SSH 里输入 **`n-ui`**（大小写混写均可，如 `N-UI` / `n-Ui` / `N-uI`，安装时已建好全部别名）即可打开数字菜单面板：
+
+```
+1) 查看状态        2) 启动服务        3) 停止服务
+4) 重启服务        5) 查看日志        6) 修改管理员账号 / 密码
+7) 保留数据卸载    8) 完整卸载（清除数据）  9) 更新程序
+0) 退出
+```
+
+- 输入数字回车执行；卸载 / 更新等危险操作需输入 `YES` 二次确认。
+- **修改管理员密码**：短暂停止服务 → 写入新凭据（scrypt）→ 使所有管理员会话失效 → 自动重启。忘记网页密码时也可用它重置。
+- **保留数据卸载**：移除程序 / 配置 / Caddy / 面板别名，但保留 `/var/lib/nui-memo` 数据。
+- **完整卸载**：连同数据一起删除，不可恢复。
+- 也支持非交互直跑：`sudo n-ui status|start|stop|restart|logs`。
+- 面板与 CLI 均为零依赖（bash + 内置 Node），随一键脚本自动安装到 `/usr/local/bin/n-ui`。
+
+---
+
 ## 运维
 
 ```bash
+sudo n-ui                          # SSH 数字菜单面板（推荐）
 systemctl status nui-memo caddy      # 状态
 journalctl -u nui-memo -f            # 后端日志
 journalctl -u caddy -f               # 证书/代理日志
@@ -309,6 +334,10 @@ node test/cloudflare.mjs
 
 # 跨域 / Bearer 外部前端 / 广告 / 单文件导出测试
 node test/frontend-deploy.mjs
+# 域名/CDN 诊断增强测试（serverIp / CF 端口告警 / 一键诊断 / CF Token 验证）
+node test/domain-probe.mjs
+# SSH 面板测试（n-ui 大小写别名 / 菜单 / CLI 重置管理员密码）
+bash test/panel.sh
 # 域名 / CDN 管理测试（校验 / Caddyfile / 特权应用 / API 热切换 / 重启持久化）
 node test/domain.mjs
 

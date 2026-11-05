@@ -217,11 +217,11 @@ export class Store {
   }
 
   async close() {
-    this.closed = true;
     clearInterval(this.compactTimer);
     clearInterval(this.pruneTimer);
     await this.writeChain.catch(() => {});
-    await this.compact();
+    await this.compact();   // 先落盘再标记关闭（compact 在 closed 时会直接返回）
+    this.closed = true;
   }
 
   // ---- 会话 ----

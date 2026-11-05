@@ -322,6 +322,22 @@ export function registerAdminRoutes(h, ctx) {
     return { ok: true, result: r || null };
   });
 
+  route('POST', '/api/admin/domain/probe', async (req, res, params, ip) => {
+    requireAdmin(req);
+    if (!limiter.allow(`probe:${ip}`, 30, 3600)) throw new HttpError(429, '诊断过于频繁，请稍后再试', 'RATE_LIMIT');
+    const body = await readJson(req, 4096);
+    const result = await ctx.domain.probe(body || {});
+    return { ok: true, ...result };
+  });
+
+  route('POST', '/api/admin/domain/cf-verify', async (req, res, params, ip) => {
+    requireAdmin(req);
+    if (!limiter.allow(`cfverify:${ip}`, 20, 3600)) throw new HttpError(429, '验证过于频繁，请稍后再试', 'RATE_LIMIT');
+    const body = await readJson(req, 4096);
+    const result = await ctx.domain.verifyCfToken(body.token);
+    return { ok: true, ...result };
+  });
+
   // ---- 跨域 / 前端部署 ----
   route('GET', '/api/admin/cors', async (req) => {
     requireAdmin(req);
