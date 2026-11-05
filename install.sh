@@ -440,6 +440,7 @@ write_config() {
   "mode": "${MODE}",
   "userHost": "${USER_HOST}",
   "adminHost": "${ADMIN_HOST}",
+  "publicIp": "${PUBLIC_IP:-}",
   "trustProxy": true,
   "cloudflare": $([[ $CLOUDFLARE -eq 1 ]] && echo true || echo false),
   "cdn": "$([[ $CLOUDFLARE -eq 1 ]] && echo cloudflare || echo none)",
@@ -461,13 +462,14 @@ EOF
     ok "配置已创建: $CONF_FILE"
   else
     # 更新域名 / Cloudflare 字段（保留其余）
-    MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" \
+    MODE="$MODE" USER_HOST="$USER_HOST" ADMIN_HOST="$ADMIN_HOST" PUBLIC_IP="${PUBLIC_IP:-}" \
     CLOUDFLARE="$CLOUDFLARE" CF_ONLY="$CF_ONLY" CF_HTTP_PORT="${CF_HTTP_PORT:-80}" CF_HTTPS_PORT="${CF_HTTPS_PORT:-443}" \
     "$APP_DIR/node/bin/node" -e '
       const fs=require("fs");const f=process.argv[1];
       const c=JSON.parse(fs.readFileSync(f,"utf8"));
       const cf=process.env.CLOUDFLARE==="1";
       c.mode=process.env.MODE;c.userHost=process.env.USER_HOST;c.adminHost=process.env.ADMIN_HOST;
+      if(process.env.PUBLIC_IP)c.publicIp=process.env.PUBLIC_IP;
       c.cloudflare=cf;c.cdn=cf?"cloudflare":"none";c.cdnName=cf?"Cloudflare":"";
       c.sslMode=cf?(c.sslMode&&c.sslMode!=="auto"?c.sslMode:"flexible"):"auto";
       c.realIpHeader=cf?"cf-connecting-ip":"x-forwarded-for";

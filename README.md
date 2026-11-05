@@ -159,7 +159,11 @@ sudo bash install.sh --domain m.example.com --cloudflare --cf-only ...
 - **自定义回源端口**：HTTP / HTTPS 回源端口均可自定义，**冷门端口**也支持（配合 CDN 的回源端口规则）。
 - **回源证书**：粘贴 Origin CA 证书 + 私钥，或填 Cloudflare API Token 自动签发；Strict 无证书时自动回退 Flexible 并提示。
 - **真实访客 IP**：Cloudflare 默认 `CF-Connecting-IP`；第三方可选 `X-Forwarded-For` / `X-Real-IP` / `True-Client-IP`，限流与 IP 封禁据此识别。
-- **辅助工具**：DNS 解析检测（并判断是否落在 Cloudflare 边缘）、Caddyfile 预览、仅允许 CF IP 回源开关。
+- **DNS 记录助手**：自动推导本机公网 IP（安装时写入 `publicIp`，或从 nip.io 主机名解析），给出建议的 A/AAAA 记录（类型 / 主机记录 / 记录值 / TTL）并一键复制；套 CF 时提示开启小黄云。
+- **一键诊断**：一次检测 DNS 解析、边缘 HTTPS/HTTP 可达性与延迟、是否经由 Cloudflare、边缘证书颁发者与剩余有效期、本机回源自检，并给出针对性建议（如 SSL 模式与回源证书不匹配）。
+- **Cloudflare 端口快选**：列出 CF 默认代理的 HTTP/HTTPS 回源端口供一键选择；填了非支持端口会告警（需 Spectrum）。
+- **CF Token 验证**：填写 API Token 后可先验证有效性再用于自动签发。
+- **辅助工具**：DNS 解析检测（判断是否落在 Cloudflare 边缘 / 是否指向本机）、Caddyfile 预览、仅允许 CF IP 回源开关。
 
 应用机制：
 
@@ -309,6 +313,8 @@ node test/cloudflare.mjs
 
 # 跨域 / Bearer 外部前端 / 广告 / 单文件导出测试
 node test/frontend-deploy.mjs
+# 域名/CDN 诊断增强测试（serverIp / CF 端口告警 / 一键诊断 / CF Token 验证）
+node test/domain-probe.mjs
 # 域名 / CDN 管理测试（校验 / Caddyfile / 特权应用 / API 热切换 / 重启持久化）
 node test/domain.mjs
 

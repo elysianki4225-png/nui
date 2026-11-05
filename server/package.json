@@ -1,6 +1,6 @@
 {
   "name": "nui-memo-server",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "备忘录 - 端到端加密备忘录服务（零依赖 Node.js 后端）",
   "type": "module",
   "private": true,
