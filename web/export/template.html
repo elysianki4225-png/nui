@@ -826,6 +826,16 @@ table.md-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .theme-preview[hidden] { display:none; }
 .theme-current { display:flex; flex-wrap:wrap; gap:16px; }
 .theme-current figure { margin:0; max-width:100%; }
+
+.acceleration-body { display:grid; gap:12px; min-width:0; }
+.acceleration-field { display:grid; gap:6px; min-width:0; }
+.acceleration-field[hidden] { display:none; }
+.acceleration-field .tf-input { border:1px solid var(--md-outline); border-radius:8px; padding:10px; box-sizing:border-box; }
+.acceleration-field input[type=checkbox] { width:20px; height:20px; }
+.acceleration .mono, .acceleration li { overflow-wrap:anywhere; }
+.acceleration .kv { margin-top:8px; min-width:0; }
+.acceleration li { margin-block:8px; line-height:1.6; }
+.acceleration summary { cursor:pointer; }
 </style>
 <script>// 首屏前应用主题，避免闪烁（CSP 允许的同源外部脚本）
 (function () {

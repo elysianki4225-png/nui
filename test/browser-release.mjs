@@ -30,6 +30,16 @@ try {
   await admin.locator('.nav-rail-item').filter({hasText:label}).click();await admin.waitForTimeout(120);
   assert(await admin.locator('.admin-page').textContent(),label);
  }
+ await admin.locator('.nav-rail-item').filter({hasText:'域名'}).click();
+ await admin.locator('.acceleration > summary').click();
+ await admin.locator('.acceleration textarea').waitFor();
+ assert.equal(await admin.locator('.acceleration input[type=checkbox]').isChecked(),false);
+ await admin.locator('.acceleration input[type=checkbox]').check();
+ await admin.locator('.acceleration textarea').fill('127.0.0.1');
+ await admin.getByRole('button',{name:'检测候选兼容性（不保存）'}).click();
+ await admin.locator('.acceleration [role=status]').filter({hasText:'仅允许公网 IP'}).waitFor();
+ for(const [width,height] of [[360,780],[768,1024],[1440,900],[780,360]]) {await admin.setViewportSize({width,height});assert(await admin.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
+ await admin.setViewportSize({width:1440,height:900});
  await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.locator('input[type=file]').waitFor();
  await admin.locator('input[type=file]').setInputFiles({name:'pet.gif',mimeType:'image/gif',buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')});
  await admin.getByRole('button',{name:'本机压缩 / 抠图并预览'}).click();
@@ -58,5 +68,5 @@ try {
  assert.equal(await user.locator('.search-bar').count(),1);assert(!(await user.locator('body').textContent()).includes('nullnull'));
  await user.reload();await user.getByText('Release browser memo',{exact:true}).waitFor();
  await user.setViewportSize({width:360,height:780});assert(await user.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
- assert.deepEqual(errors,[]);console.log('PASS Chromium: 11 admin pages, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
+ assert.deepEqual(errors,[]);console.log('PASS Chromium: 11 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}
