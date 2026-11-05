@@ -383,3 +383,16 @@ nui/
 ## 许可
 
 本项目按仓库现有许可发布。图标来自 Material Design Icons（Apache-2.0），字体 Roboto / Roboto Mono（Apache-2.0）。
+
+### 简化的域名设置
+
+域名页按「选择访问方式 → 填写域名 → 应用更改」配置。端口、Full/Strict、回源证书、真实 IP 头、防火墙与 Caddyfile 预览收进高级设置，原有功能保留。
+
+新选 CDN 且未配置加密模式时，无证书使用 Flexible（源站链路为 HTTP），有证书使用 Strict；已有模式不会被覆盖。CDN 控制台的 SSL 模式仍需手动匹配，使用非标准端口还需要在 CDN 配置回源端口规则。521 表示连接源站被拒绝，后端进程自检成功不能证明 Caddy 或公网回源正常。
+
+可选 DOM 交互回归（jsdom 仅用于测试，不是运行依赖）：
+
+```bash
+npm install --prefix /tmp/nui-ui-test jsdom@24
+NUI_JSDOM_MODULE=/tmp/nui-ui-test/node_modules/jsdom node test/domain-ui.cjs
+```

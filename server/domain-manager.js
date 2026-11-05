@@ -141,7 +141,10 @@ export class DomainManager {
         if (out.https.viaCloudflare) out.hints.push('HTTPS 经由 Cloudflare 返回（检测到 CF 响应头）。');
         if (out.tls && out.tls.daysLeft != null && out.tls.daysLeft < 15) out.hints.push(`边缘证书将在 ${out.tls.daysLeft} 天后到期，请及时续期。`);
       } else if (out.dns.cloudflare) {
-        out.hints.push('DNS 已套 CF 但 HTTPS 探测失败：请检查 CF SSL 模式与源站回源证书（Flexible 用 HTTP，Full/Strict 需有效回源证书）。');
+        if (out.https.status === 521) out.hints.push('521：Cloudflare 连接源站被拒绝。请先保存此页配置，再检查 Caddy 是否启动、80/443 回源端口是否放行，以及 CF 控制台的 SSL 模式是否一致。非标准端口还需配置 CDN 回源端口规则。');
+        else if (out.https.status === 525 || out.https.status === 526) out.hints.push('源站 TLS 握手或证书校验失败：检查回源证书是否有效、覆盖当前域名，以及 CDN SSL 模式是否匹配。');
+        else out.hints.push('DNS 已套 CF 但 HTTPS 探测失败：请检查 CF SSL 模式与源站回源证书（Flexible 用 HTTP，Full/Strict 需有效回源证书）。');
+        out.hints.push('后端进程自检正常不代表公网回源正常；该自检不经过 Caddy、防火墙或 Cloudflare。');
       }
     }
     if (scheme === 'http' || input.scheme === 'http' || this.cfg.sslMode === 'flexible') {
