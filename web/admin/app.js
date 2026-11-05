@@ -1,3 +1,4 @@
+import { renderAcceleration } from './acceleration.js';
 import { renderStorage, renderAppearance } from './customize.js';
 import { loadAppearance } from '/assets/js/appearance.js';
 import {
@@ -19,6 +20,7 @@ async function boot() {
 }
 function setView(v) { S.view = v; render(); }
 function render() {
+  S.el.page?._disposeAcceleration?.();
   S.pageCleanup?.(); S.pageCleanup = null;
   clear($app);
   if (S.view === 'setup') renderSetup();
@@ -162,6 +164,7 @@ function goPage(page) {
 }
 
 function renderPage() {
+  S.el.page?._disposeAcceleration?.();
   S.pageCleanup?.(); S.pageCleanup = null;
   const c = S.el.content;
   clear(c);
@@ -583,11 +586,13 @@ async function renderDomain(page) {
   try { data = await GET('/api/admin/domain'); } catch (e) { toast(e.message, { type: 'error' }); return; }
   page.querySelector('.empty-state')?.remove();
 
+  if (!page.isConnected) return;
   const f = { ...data.settings, certPem: '', keyPem: '', cfApiToken: '' };
   const statusPanel = h('div', { class: 'panel' });
   const formWrap = h('div');
   const resultWrap = h('div');
   wrap.append(statusPanel, formWrap, resultWrap);
+  page._disposeAcceleration = renderAcceleration(wrap);
 
   function urlRow(label, url) {
     return h('div', { class: 'kv' }, h('div', { class: 'k' }, label),

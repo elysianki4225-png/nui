@@ -1,3 +1,4 @@
+import { registerAccelerationRoutes } from './acceleration.js';
 import { registerAppearanceRoutes } from './appearance.js';
 import { registerStorageRoutes } from './storage.js';
 import os from 'node:os';
@@ -216,6 +217,7 @@ export function createApi(ctx) {
   registerAdminRoutes(helpers, ctx);
   registerStorageRoutes(helpers, ctx);
   registerAppearanceRoutes(helpers, ctx);
+  registerAccelerationRoutes(helpers, ctx);
 
   // ---------- 分发 ----------
   return async function handleApi(req, res, pathname) {

@@ -5,7 +5,7 @@ const dom=new JSDOM('<main></main>'); const document=dom.window.document;
 const source=fs.readFileSync(require('node:path').join(__dirname, '../web/admin/app.js'),'utf8');
 const core=fs.readFileSync(require('node:path').join(__dirname, '../web/assets/js/core.js'),'utf8');
 const settings={mode:'domain', userHost:'m.example.com',cdn:'none',sslMode:'auto',cfHttpPort:80,cfHttpsPort:443};
-const ctx={document, console, GET:async()=>({settings,serverIp:'1.2.3.4',urls:{userUrl:'https://m.example.com',adminUrl:'https://m.example.com/admin'},canApply:true}),pageHead:()=>document.createElement('h2'),loadingEl:()=>document.createElement('aside'),icon:()=>document.createElement('i'), toast:()=>{},renderPage:()=>{},copyText:()=>{}};
+const ctx={renderAcceleration:()=>()=>{}, document, console, GET:async()=>({settings,serverIp:'1.2.3.4',urls:{userUrl:'https://m.example.com',adminUrl:'https://m.example.com/admin'},canApply:true}),pageHead:()=>document.createElement('h2'),loadingEl:()=>document.createElement('aside'),icon:()=>document.createElement('i'), toast:()=>{},renderPage:()=>{},copyText:()=>{}};
 vm.createContext(ctx); vm.runInContext(core.slice(core.indexOf('export function h('),core.indexOf('// ---------- 图标')).replaceAll('export ',''),ctx);
 vm.runInContext(source.slice(source.indexOf('async function renderDomain(page)'),source.indexOf('// ============================ 前端 / 跨域')),ctx);
 (async()=>{await ctx.renderDomain(document.querySelector('main')); const click=t=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent===t);assert(b,t);b.click();};
