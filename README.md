@@ -457,3 +457,14 @@ NUI_CANVAS_MODULE=/tmp/nui-ui-test/node_modules/@napi-rs/canvas node test/theme-
 已增加完整回归入口 `bash scripts/check-release.sh` 和 GitHub Actions 校验。
 本次自检修复了更新、鉴权、并发上传、持久化/迁移、域名失败回滚和媒体生命周期等边界问题。
 详细的测试结果、修复清单、生产部署限制与重现命令见 [2.0.0 验收报告](docs/RELEASE-2.0.0.md)，功能与升级说明见 [更新日志](CHANGELOG.md)。
+
+### 2.0.0 权限故障修复与验收
+
+若日志出现 `EACCES: permission denied, open '/etc/nui-memo/config.json'`，请使用新版安装器升级；它会保留数据并修复配置/数据目录权限，域名改写和 SSH 改密也不再丢失服务账号权限。不要用 `chmod 777` 或将含凭据的配置设为全局可读。
+
+```bash
+curl -fL https://github.com/elysianki4225-png/nui/releases/download/v2.0.0/install.sh -o /tmp/nui-install-2.0.0.sh
+sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
+```
+
+升级前备份配置与数据目录。完整测试记录、临时恢复命令和生产环境验收边界见 [2.0.0 验收报告](docs/RELEASE-2.0.0.md)。

@@ -14,6 +14,8 @@ CF_CERT_FILE="$CONF_DIR/cf-origin.pem"; CF_KEY_FILE="$CONF_DIR/cf-origin.key"
 CADDY_BIN="/bin/true"; BACKEND_PORT=8787
 mkdir -p "$CONF_DIR" "$CADDY_DIR" "$DATA_DIR" "$APP_DIR/node/bin" "$APP_DIR/server"
 ln -sf "$(command -v node)" "$APP_DIR/node/bin/node"
+mkdir -p "$APP_DIR/scripts"
+cp "$ROOT/scripts/repair-permissions.sh" "$APP_DIR/scripts/"
 cp "$ROOT/server/domain.js" "$APP_DIR/server/domain.js"
 # 屏蔽需要 root 的系统操作
 id() { return 1; }

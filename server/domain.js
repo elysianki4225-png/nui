@@ -192,12 +192,23 @@ export function mergeConfigFile(confFile, s) {
   return cfg;
 }
 
-export function atomicWrite(file, data, mode) {
+export function atomicWrite(file, data, mode, owner) {
   const tmp = `${file}.tmp-${process.pid}`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(tmp, data, mode != null ? { mode } : undefined);
-  fs.renameSync(tmp, file);
-  if (mode != null) { try { fs.chmodSync(file, mode); } catch {} }
+  let previous;
+  try { previous = fs.statSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try {
+    fs.writeFileSync(tmp, data, { mode: mode ?? (previous ? previous.mode & 0o777 : 0o644), flag: 'wx' });
+    // rename replaces the inode: explicitly carry forward owner/group, not just mode.
+    const ownership = owner || previous;
+    if (ownership) {
+      const current = fs.statSync(tmp);
+      if (current.uid !== ownership.uid || current.gid !== ownership.gid) fs.chownSync(tmp, ownership.uid, ownership.gid);
+    }
+    fs.chmodSync(tmp, mode ?? (previous ? previous.mode & 0o777 : 0o644));
+    const fd = fs.openSync(tmp, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+  } finally { try { fs.unlinkSync(tmp); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
 }
 
 function looksLikePem(s, kind) {
@@ -246,7 +257,8 @@ export function applyRequest(req, { dryRun = false } = {}) {
   try {
     backups = [confFile, caddyFile, certFile, keyFile, path.join(dataDir, 'domain.json')].map(file => {
       if (!fs.existsSync(file)) return { file, exists: false };
-      return { file, exists: true, bytes: fs.readFileSync(file), mode: fs.statSync(file).mode & 0o777 };
+      const stat = fs.statSync(file);
+      return { file, exists: true, bytes: fs.readFileSync(file), mode: stat.mode & 0o777, uid: stat.uid, gid: stat.gid };
     });
     captured = true;
     let base = {};
@@ -320,7 +332,7 @@ export function applyRequest(req, { dryRun = false } = {}) {
     if (captured) {
       try {
         for (const backup of backups) {
-          if (backup.exists) atomicWrite(backup.file, backup.bytes, backup.mode);
+          if (backup.exists) atomicWrite(backup.file, backup.bytes, backup.mode, backup);
           else if (fs.existsSync(backup.file)) fs.unlinkSync(backup.file);
         }
         if (reloaded && !dryRun) execFileSync('systemctl', ['reload', SYS.caddyService], { stdio: 'pipe' });

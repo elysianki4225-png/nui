@@ -7,7 +7,7 @@ for test in smoke release-regression storage-safety domain-rollback cloudflare d
   node "test/$test.mjs"
 done
 node test/media-lifecycle.cjs
-for test in install-cf install-stdin install-update panel; do
+for test in install-cf install-stdin install-update panel permissions; do
   echo "===== $test ====="
   bash "test/$test.sh"
 done
@@ -15,5 +15,7 @@ if [[ -n "${NUI_JSDOM_MODULE:-}" ]]; then
   for test in user-ui domain-ui appearance-ui session-ui; do node "test/$test.cjs"; done
 fi
 if [[ -n "${NUI_CANVAS_MODULE:-}" ]]; then node test/theme-worker.cjs; fi
-bash -n install.sh scripts/n-ui.sh
+bash -n install.sh scripts/n-ui.sh scripts/repair-permissions.sh
 npm audit
+
+if [[ -n "${NUI_BROWSER_DEPS:-}" ]]; then node test/browser-release.mjs; fi
