@@ -1,0 +1,11 @@
+const {JSDOM}=require(process.env.NUI_JSDOM_MODULE||'jsdom');const {buildSync}=require('esbuild');const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const dom=new JSDOM('<button id="anchor">menu</button>',{url:'https://test.example',runScripts:'outside-only',pretendToBeVisual:true});
+dom.window.eval(buildSync({entryPoints:['web/assets/js/core.js'],bundle:true,write:false,format:'iife',globalName:'Core'}).outputFiles[0].text);
+const {Core}=dom.window;let closed=0;
+Core.openDialog({title:'private',content:Core.h('textarea',{value:'secret'}),onClose:()=>closed++});Core.openMenu(dom.window.document.querySelector('button'),[{label:'private'}]);
+Core.closeOverlays();assert.equal(closed,1);assert.equal(dom.window.document.querySelectorAll('.dialog-scrim,.menu-scrim,.menu').length,0);
+const source=fs.readFileSync('web/user/app.js','utf8');
+const S={selection:new Set(Array.from({length:2505},(_,i)=>String(i))),memos:[],decrypted:new Map(),media:{release(){}}};S.memos=[...S.selection].map(id=>({id,pinned:false}));
+let lengths=[];const ctx={S,POST:async(p,b)=>lengths.push(b.ids.length),toast(){},confirmDialog:async()=>true,exitSelectMode(){S.selection.clear();},syncMemos(){}};
+vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('async function batchPin()'),source.indexOf('// ============================ 详情')),ctx);
+(async()=>{await ctx.batchPin();assert.deepEqual(lengths,[1000,1000,505]);lengths=[];S.selection=new Set(S.memos.map(m=>m.id));await ctx.batchDelete();assert.deepEqual(lengths,[1000,1000,505]);assert.equal(S.memos.length,0);console.log('PASS: lock clears private dialogs/menus; 2505-item pin/delete submits every batch');dom.window.close();})().catch(e=>{console.error(e);process.exitCode=1;dom.window.close();});

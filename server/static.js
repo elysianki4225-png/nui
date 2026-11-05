@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,7 @@ const MIME = {
 };
 
 function safeJoin(root, urlPath) {
-  const decoded = decodeURIComponent(urlPath);
+  const decoded = urlPath; // decoded once by the HTTP entrypoint
   const full = path.normalize(path.join(root, decoded));
   if (full !== root && !full.startsWith(root + path.sep)) return null;
   return full;
@@ -53,12 +54,7 @@ async function serveFile(req, res, file, { cache = 'no-cache', spa = false } = {
   headers['Content-Length'] = stat.size;
   res.writeHead(200, headers);
   if (req.method === 'HEAD') { res.end(); return true; }
-  await new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(file);
-    stream.on('error', reject);
-    stream.on('end', resolve);
-    stream.pipe(res);
-  }).catch(() => { try { res.destroy(); } catch {} });
+  await pipeline(fs.createReadStream(file), res).catch(() => { try { res.destroy(); } catch {} });
   return true;
 }
 

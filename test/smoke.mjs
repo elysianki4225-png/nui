@@ -1,7 +1,7 @@
 // 端到端冒烟测试：启动模拟 Telegram + 真实后端，验证完整链路
 import { spawn } from 'node:child_process';
 import { webcrypto as crypto } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -115,11 +115,21 @@ async function main() {
     r = await admin('GET', '/api/admin/status');
     ok(r.data.setupRequired === false && r.data.loggedIn === true, '初始化后已登录');
 
+    r = await admin('POST', '/api/admin/storage/start', { target: 'local' });
+    ok(r.status === 200, '无机器人也能选择本地磁盘');
+    r = await admin('POST', '/api/admin/storage/step');
+    ok(r.data.mode === 'local' && !r.data.migration, '无内容时立即完成切换');
+    r = await anon('GET', '/api/config');
+    ok(r.data.storageReady === true, '本地存储无需 Telegram 即可就绪');
+
     console.log('\n[3] 绑定 Telegram 机器人（模拟）');
     r = await admin('POST', '/api/admin/bots', { name: '测试机器人', token: '123456:ABCDEF_mock_token_0123456789', chatId: '100200300' });
     ok(r.status === 200 && r.data.ok, '机器人绑定成功');
     r = await admin('GET', '/api/config');
     ok(r.data.storageReady === true, 'storageReady 为 true');
+
+    await admin('POST', '/api/admin/storage/start', { target: 'telegram' });
+    await admin('POST', '/api/admin/storage/step');
 
     console.log('\n[4] 用户注册（数字账号 + 密钥）');
     const user = makeClient();
@@ -192,6 +202,48 @@ async function main() {
     r = await user('GET', `/api/user/memos/${imgId}/thumb`);
     const decThumb = await decryptBytes(encKey, new Uint8Array(r.buf));
     ok(decThumb.length === thumbBytes.length, '缩略图中转并可解密');
+
+    console.log('\n[存储迁移与主题]');
+    r = await user('POST', '/api/admin/storage/start', { target: 'local' });
+    ok(r.status === 401, '普通用户不能切换存储');
+    r = await user('PATCH', '/api/admin/appearance', { petEnabled: true });
+    ok(r.status === 401, '普通用户不能改主题');
+    r = await admin('PATCH', '/api/admin/appearance', { userColor: 'url(evil)', petEnabled: true });
+    ok(r.status === 400, '拒绝非 HEX 颜色');
+    r = await admin('PATCH', '/api/admin/appearance', { userColor: '#123456', adminColor: '#654321', petEnabled: true, petSize: 128 });
+    ok(r.status === 200 && r.data.appearance.petEnabled, '管理员可设置两端颜色与桌宠');
+    const tinyGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+    for (const slot of ['pet', 'mobile', 'tablet', 'desktop']) {
+      r = await admin('PUT', `/api/admin/appearance/assets/${slot}`, tinyGif, true);
+      ok(r.status === 200, `${slot} 素材上传到 TG`);
+    }
+    await user('PUT', '/api/user/profile/avatar', avatarBytes, true);
+    r = await anon('GET', '/api/appearance');
+    ok(r.data.appearance.assets.mobile && !JSON.stringify(r.data).includes('fileId') && !JSON.stringify(r.data).includes('key'), '公开主题仅提供中转 URL，不暴露存储密钥');
+    for (const target of ['local', 'telegram']) {
+      r = await admin('POST', '/api/admin/storage/start', { target });
+      ok(r.status === 200, `启动迁移到 ${target}`);
+      r = await user('PATCH', '/api/user/profile', { nickname: 'Blocked', bio: '' });
+      ok(r.status === 503, '迁移期间拒绝并发用户写入');
+      for (let step = 0; step < 20; step++) {
+        r = await admin('POST', '/api/admin/storage/step');
+        if (r.status !== 200 || !r.data.migration) break;
+      }
+      ok(r.status === 200 && r.data.mode === target && !r.data.migration && r.data.cleanupPending === 0, `${target} 迁移校验完成且原副本已清理`);
+      if (target === 'telegram') ok(readdirSync(path.join(dataDir, 'objects')).length === 0, '迁移到 TG 后本地文件已实际清空');
+      r = await user('GET', `/api/user/memos/${memoId}/content?part=0`);
+      ok(dec.decode(await decryptBytes(encKey, new Uint8Array(r.buf))) === text, `${target} 密文内容可正常解密`);
+      r = await anon('GET', '/api/avatars/testuser');
+      ok(r.status === 200 && r.buf.equals(avatarBytes), `${target} 头像仍可中转解密`);
+      r = await anon('GET', '/api/theme-assets/pet');
+      ok(r.status === 200 && r.buf.equals(tinyGif), `${target} GIF 素材完整保留`);
+    }
+    r = await admin('DELETE', '/api/admin/appearance/assets/mobile');
+    ok(r.status === 200 && !r.data.appearance.assets.mobile, '可删除背景素材');
+    r = await admin('POST', '/api/admin/storage/start', { target: 'local' });
+    await admin('POST', '/api/admin/storage/step');
+    r = await admin('POST', '/api/admin/storage/cancel');
+    ok(r.status === 200 && !r.data.migration && r.data.local > 0 && r.data.telegram > 0, '中途取消后允许混合存储，不丢失已迁移内容');
 
     console.log('\n[8] 管理员只能看到账号，看不到内容');
     r = await admin('GET', '/api/admin/users');

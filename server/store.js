@@ -39,7 +39,7 @@ function defaultState() {
 /**
  * 零依赖持久化：内存索引 + 追加式事件日志 + 定期快照压缩。
  * 磁盘上只保存：账号元数据、封禁规则、会话哈希、机器人凭据，
- * 以及备忘录的「密文元数据」（标题/摘要的密文）。正文与媒体密文只存在于 Telegram。
+ * 以及备忘录的「密文元数据」（标题/摘要的密文）。正文与媒体密文按管理员配置存于 Telegram 或本地对象目录。
  */
 export class Store {
   constructor(dir) {
@@ -67,8 +67,7 @@ export class Store {
         const snap = JSON.parse(raw);
         this.state = { ...defaultState(), ...snap, settings: { ...defaultState().settings, ...(snap.settings || {}) } };
       } catch (e) {
-        console.error('[store] 快照损坏，尝试从事件日志恢复:', e.message);
-        this.state = defaultState();
+        throw new Error(`数据快照损坏，已停止启动并保留原文件；请从备份恢复：${e.message}`);
       }
     }
     if (fs.existsSync(this.logFile)) {
@@ -80,7 +79,7 @@ export class Store {
           this.apply(JSON.parse(line));
           applied++;
         } catch (e) {
-          console.error('[store] 跳过损坏日志行:', e.message);
+          throw new Error(`事件日志损坏，已停止启动并保留原文件：${e.message}`);
         }
       }
       this.logLines = applied;
@@ -158,7 +157,7 @@ export class Store {
         break;
       }
       case 'ban.remove': delete s.ipBans[ev.id]; break;
-      case 'bot.add': s.bots.push(ev.bot); break;
+      case 'bot.add': { const i = s.bots.findIndex(b => b.id === ev.bot.id); if (i < 0) s.bots.push(ev.bot); else s.bots[i] = ev.bot; break; }
       case 'bot.update': {
         const b = s.bots.find((x) => x.id === ev.id);
         if (b) Object.assign(b, ev.patch);
@@ -181,6 +180,7 @@ export class Store {
     this.logLines++;
     const line = JSON.stringify(ev) + '\n';
     this.writeChain = this.writeChain.then(() => fsp.appendFile(this.logFile, line)).catch((e) => {
+      this.writeFailure = e;
       console.error('[store] 写入日志失败:', e.message);
     });
     if (this.logLines > 5000) this.maybeCompact(true);
@@ -196,24 +196,30 @@ export class Store {
     await this.compact();
   }
 
-  async compact() {
-    if (this.closed) return;
-    await this.writeChain.catch(() => {});
+  compact() {
+    if (this.closed) return Promise.resolve();
+    // Capture state before later log() calls, serialize rename/truncate with log writes.
+    const data = JSON.stringify(this.state);
     this.dirty = false;
     this.lastCompact = Date.now();
-    const data = JSON.stringify(this.state);
-    try {
-      const fh = await fsp.open(this.tmpFile, 'w');
-      await fh.writeFile(data);
-      await fh.sync();
-      await fh.close();
+    const job = this.writeChain.then(async () => {
+      const fh = await fsp.open(this.tmpFile, 'w', 0o600);
+      try { await fh.writeFile(data); await fh.sync(); } finally { await fh.close(); }
       await fsp.rename(this.tmpFile, this.snapshotFile);
-      await fsp.writeFile(this.logFile, '');
+      const dir = await fsp.open(path.dirname(this.snapshotFile), 'r');
+      try { await dir.sync(); } finally { await dir.close(); }
+      const log = await fsp.open(this.logFile, 'w', 0o600);
+      try { await log.sync(); } finally { await log.close(); }
       this.logLines = 0;
-    } catch (e) {
-      console.error('[store] 快照写入失败:', e.message);
-      this.dirty = true;
-    }
+    });
+    this.writeChain = job.catch(e => { this.writeFailure = e; this.dirty = true; console.error('[store] 快照写入失败:', e.message); });
+    return this.writeChain;
+  }
+
+  async flushDurable() {
+    if (this.closed) throw new Error('数据存储已关闭，禁止删除原文件');
+    await this.compact();
+    if (this.writeFailure) throw new Error('元数据写入失败；为避免丢失数据，未删除原文件，请检查磁盘并重启');
   }
 
   async close() {
@@ -234,6 +240,7 @@ export class Store {
 
   // ---- 未完成上传清理 ----
   prunePendingMemos() {
+    if (this.state.settings.storageMigration) return [];
     const cutoff = nowSec() - 3600;
     const stale = Object.values(this.state.memos).filter((m) => m.status === 'pending' && m.createdAt < cutoff);
     for (const m of stale) this.log({ t: 'memo.delete', id: m.id });

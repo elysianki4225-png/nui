@@ -50,7 +50,7 @@ export function registerUserRoutes(h, ctx) {
       if (store.state.users[user.account] !== user) { await pool.deleteMessage(uploaded.botId, uploaded.messageId).catch(() => {}); throw new HttpError(409, '账号已删除', 'NOT_FOUND'); }
       const old = user.avatar;
       store.log({ t: 'user.update', account: user.account, patch: { avatar: { ...uploaded, key: key.toString('hex'), iv: iv.toString('hex') } } });
-      if (old) pool.deleteMessage(old.botId, old.messageId).catch(() => {});
+      await pool.retire(old ? [old] : []);
       return { ok: true, profile: profileDTO(user) };
     } finally { avatarBusy.delete(user.account); }
   });
@@ -59,21 +59,15 @@ export function registerUserRoutes(h, ctx) {
     if (avatarBusy.has(user.account)) throw new HttpError(409, '头像正在上传，请稍后操作', 'AVATAR_BUSY');
     const old = user.avatar;
     store.log({ t: 'user.update', account: user.account, patch: { avatar: null } });
-    if (old) pool.deleteMessage(old.botId, old.messageId).catch(() => {});
+    await pool.retire(old ? [old] : []);
     return { ok: true };
   });
   route('GET', '/api/avatars/:nickname', async (req, res, params, ip) => {
     if (!limiter.allow(`avatar-read:${ip}`, 120, 60)) throw new HttpError(429, '请求过于频繁', 'RATE_LIMIT');
     const user = Object.values(store.state.users).find(u => u.nicknameKey === params.nickname.normalize('NFKC').toLowerCase() && !u.banned);
     const a = user?.avatar;
-    const bot = a && store.state.bots.find(b => b.id === a.botId);
-    if (!bot) throw new HttpError(404, '头像不存在', 'NOT_FOUND');
-    const path = await pool.getFilePath(bot, a.fileId);
-    const upstream = await fetch(`${pool.apiBase}/file/bot${bot.token}/${path}`, { signal: AbortSignal.timeout(15000) });
-    if (!upstream.ok) throw new HttpError(502, '头像暂时不可用', 'AVATAR_FETCH');
-    const chunks = []; let size = 0;
-    for await (const chunk of upstream.body) { size += chunk.length; if (size > 128 * 1024 + 16) throw new HttpError(502, '头像过大', 'AVATAR_SIZE'); chunks.push(chunk); }
-    const bytes = Buffer.concat(chunks);
+    if (!a) throw new HttpError(404, '头像不存在', 'NOT_FOUND');
+    const bytes = await pool.read(a, 128 * 1024 + 16);
     const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(a.key, 'hex'), Buffer.from(a.iv, 'hex'));
     decipher.setAuthTag(bytes.subarray(-16));
     const image = Buffer.concat([decipher.update(bytes.subarray(0, -16)), decipher.final()]);
@@ -92,12 +86,8 @@ export function registerUserRoutes(h, ctx) {
     return { memo: m, auth: a };
   }
 
-  function purgeMemoFiles(m) {
-    const jobs = [];
-    for (const p of m.parts || []) jobs.push(pool.deleteMessage(p.botId, p.messageId));
-    if (m.thumb) jobs.push(pool.deleteMessage(m.thumb.botId, m.thumb.messageId));
-    return Promise.allSettled(jobs);
-  }
+  function memoFiles(m) { return [...(m.parts || []).filter(Boolean), ...(m.thumb ? [m.thumb] : [])]; }
+  const uploads = new Set();
 
   // 列表（仅返回密文元数据，服务端无法解密）
   route('GET', '/api/user/memos', async (req) => {
@@ -113,7 +103,7 @@ export function registerUserRoutes(h, ctx) {
 
   route('GET', '/api/user/stats', async (req) => {
     const { user } = requireUser(req);
-    return { ok: true, stats: store.userStats(user.account), storageReady: pool.bots().length > 0 };
+    return { ok: true, stats: store.userStats(user.account), storageReady: pool.ready() };
   });
 
   // 创建（占位，随后上传密文分块）
@@ -129,7 +119,7 @@ export function registerUserRoutes(h, ctx) {
     if (!Number.isFinite(size) || size < 0 || size > maxFileSize()) throw new HttpError(400, `文件大小需在 0 - ${Math.floor(maxFileSize() / MB)}MB 之间`, 'BAD_SIZE');
     if (!meta || meta.length > META_MAX) throw new HttpError(400, '元数据无效或过大', 'BAD_META');
     if (type === 'text' && expectedParts !== 1 && size <= cfg.chunkSize) { /* 允许 */ }
-    if (pool.bots().length === 0) throw new HttpError(503, '管理员尚未绑定存储机器人，暂时无法保存', 'NO_BOT');
+    if (!pool.ready()) throw new HttpError(503, '管理员尚未绑定存储机器人，暂时无法保存', 'NO_BOT');
     const id = crypto.randomBytes(12).toString('base64url');
     const memo = {
       id, account: user.account, type, size, meta,
@@ -143,40 +133,58 @@ export function registerUserRoutes(h, ctx) {
   // 上传一个密文分块（原始字节 = IV || AES-GCM 密文）
   route('PUT', '/api/user/memos/:id/parts/:index', async (req, res, params) => {
     const { memo, auth } = getOwnedMemo(req, params.id);
+    const slot = `${memo.id}:part:${params.index}`;
+    if (uploads.has(slot)) throw new HttpError(409, '该分块正在上传', 'UPLOAD_BUSY');
+    uploads.add(slot);
+    try {
     if (memo.status !== 'pending') throw new HttpError(409, '该备忘录已完成或已锁定', 'NOT_PENDING');
-    const index = parseInt(params.index, 10);
-    if (!Number.isFinite(index) || index < 0 || index >= memo.expectedParts) throw new HttpError(400, '分块序号无效', 'BAD_INDEX');
+    const index = Number(params.index);
+    if (!Number.isInteger(index) || index < 0 || index >= memo.expectedParts) throw new HttpError(400, '分块序号无效', 'BAD_INDEX');
     if (memo.parts[index]) throw new HttpError(409, '该分块已上传', 'DUP_PART');
     const limit = cfg.chunkSize + 64;
     const buf = await readBody(req, limit);
-    if (buf.length < 29) throw new HttpError(400, '分块数据无效', 'BAD_PART');
+    if (buf.length < 28) throw new HttpError(400, '分块数据无效', 'BAD_PART');
     const caption = JSON.stringify({ v: 1, a: memo.account, m: memo.id, p: index, t: memo.type });
     const result = await pool.upload(buf, { filename: `${memo.id}.${index}.bin`, caption });
+    if (store.state.memos[memo.id] !== memo || !store.state.users[memo.account] || store.state.users[memo.account].banned) {
+      await pool.retire([result]); throw new HttpError(409, '备忘录或账号已删除/封禁', 'NOT_FOUND');
+    }
     memo.parts[index] = { fileId: result.fileId, messageId: result.messageId, botId: result.botId, size: result.size };
     store.log({ t: 'memo.update', id: memo.id, patch: { parts: memo.parts } });
     return { ok: true, index, size: result.size };
+    } finally { uploads.delete(slot); }
   });
 
   // 上传加密缩略图
   route('PUT', '/api/user/memos/:id/thumb', async (req, res, params) => {
     const { memo } = getOwnedMemo(req, params.id);
+    const slot = `${memo.id}:thumb`;
+    if (uploads.has(slot)) throw new HttpError(409, '该分块正在上传', 'UPLOAD_BUSY');
+    uploads.add(slot);
+    try {
     if (memo.status !== 'pending') throw new HttpError(409, '该备忘录已完成', 'NOT_PENDING');
     if (memo.thumb) throw new HttpError(409, '缩略图已存在', 'DUP_THUMB');
     const buf = await readBody(req, 1 * MB);
-    if (buf.length < 29) throw new HttpError(400, '缩略图数据无效', 'BAD_THUMB');
+    if (buf.length < 28) throw new HttpError(400, '缩略图数据无效', 'BAD_THUMB');
     const caption = JSON.stringify({ v: 1, a: memo.account, m: memo.id, p: 'thumb', t: memo.type });
     const result = await pool.upload(buf, { filename: `${memo.id}.thumb.bin`, caption });
+    if (store.state.memos[memo.id] !== memo || !store.state.users[memo.account] || store.state.users[memo.account].banned) {
+      await pool.retire([result]); throw new HttpError(409, '备忘录或账号已删除/封禁', 'NOT_FOUND');
+    }
     const thumb = { fileId: result.fileId, messageId: result.messageId, botId: result.botId, size: result.size };
     store.log({ t: 'memo.update', id: memo.id, patch: { thumb } });
     return { ok: true };
+    } finally { uploads.delete(slot); }
   });
 
   // 完成上传
   route('POST', '/api/user/memos/:id/complete', async (req, res, params) => {
     const { memo } = getOwnedMemo(req, params.id);
     if (memo.status === 'ready') return { ok: true, memo: memoDTO(memo) };
+    if ([...uploads].some(key => key.startsWith(memo.id + ':'))) throw new HttpError(409, '请等待分块和缩略图上传完成', 'UPLOAD_BUSY');
     const count = memo.parts.filter(Boolean).length;
     if (count !== memo.expectedParts) throw new HttpError(409, `分块不完整 (${count}/${memo.expectedParts})`, 'INCOMPLETE');
+    if (memo.parts.reduce((sum, p) => sum + p.size, 0) !== memo.size + 28 * memo.expectedParts) throw new HttpError(400, '密文长度与申报文件大小不符', 'BAD_SIZE');
     const cipherSize = memo.parts.reduce((s, p) => s + (p?.size || 0), 0) + (memo.thumb?.size || 0);
     store.log({ t: 'memo.update', id: memo.id, patch: { status: 'ready', cipherSize, updatedAt: nowSec() } });
     return { ok: true, memo: memoDTO(store.state.memos[memo.id]) };
@@ -219,7 +227,7 @@ export function registerUserRoutes(h, ctx) {
   route('DELETE', '/api/user/memos/:id', async (req, res, params) => {
     const { memo } = getOwnedMemo(req, params.id);
     store.log({ t: 'memo.delete', id: memo.id });
-    purgeMemoFiles(memo); // 异步进入 TG 删除队列
+    await pool.retire(memoFiles(memo));
     return { ok: true };
   });
 
@@ -227,15 +235,16 @@ export function registerUserRoutes(h, ctx) {
     const { user } = requireUser(req);
     const body = await readJson(req, 256 * 1024);
     const ids = Array.isArray(body.ids) ? body.ids.slice(0, 1000) : [];
-    let deleted = 0;
+    let deleted = 0; const retired = [];
     for (const id of ids) {
       const m = store.state.memos[id];
       if (m && m.account === user.account) {
         store.log({ t: 'memo.delete', id });
-        purgeMemoFiles(m);
+        retired.push(...memoFiles(m));
         deleted++;
       }
     }
+    await pool.retire(retired);
     return { ok: true, deleted };
   });
 
@@ -262,12 +271,13 @@ export function registerUserRoutes(h, ctx) {
     const proof = String(body.proof || '');
     if (!verifySecret(proof, user.proofHash)) throw new HttpError(401, '密钥验证失败', 'BAD_CREDENTIALS');
     const arr = store.accountIndex.get(user.account) || [];
+    const retired = user.avatar ? [user.avatar] : [];
     for (const m of [...arr]) {
       store.log({ t: 'memo.delete', id: m.id });
-      purgeMemoFiles(m);
+      retired.push(...memoFiles(m));
     }
-    if (user.avatar) pool.deleteMessage(user.avatar.botId, user.avatar.messageId).catch(() => {});
     store.log({ t: 'user.delete', account: user.account });
+    await pool.retire(retired);
     sessions.deleteForAccount(user.account);
     clearCookie(res, USER_COOKIE, cookieOpts(req));
     store.audit(user.account, 'user.delete', '用户自助注销');

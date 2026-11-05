@@ -1,0 +1,30 @@
+name: Release verification
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install isolated UI test dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/nui-ui" --no-package-lock jsdom@24.1.3 @napi-rs/canvas@0.1.80
+          echo "NUI_JSDOM_MODULE=$RUNNER_TEMP/nui-ui/node_modules/jsdom" >> "$GITHUB_ENV"
+          echo "NUI_CANVAS_MODULE=$RUNNER_TEMP/nui-ui/node_modules/@napi-rs/canvas" >> "$GITHUB_ENV"
+      - name: Rebuild shipped browser artifacts
+        run: |
+          npm run build:theme
+          npm run build:export
+          git diff --exit-code -- web/assets/js/theme-image-worker.js web/assets/theme-libraries.txt web/export/template.html
+      - name: Full verification
+        run: bash scripts/check-release.sh

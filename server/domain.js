@@ -13,6 +13,9 @@ export const REAL_IP_HEADERS = ['cf-connecting-ip', 'x-forwarded-for', 'x-real-i
 export const CF_PROXY_HTTP_PORTS = [80, 8080, 8880, 2052, 2082, 2086, 2095];
 export const CF_PROXY_HTTPS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 
+export const CF_V4 = ['173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'];
+export const CF_V6 = ['2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32'];
+
 // 系统路径（可被环境变量覆盖，便于测试 / 非标准安装）
 export const SYS = {
   confFile: process.env.NUI_CONF_FILE || '/etc/nui-memo/config.json',
@@ -138,6 +141,15 @@ export function buildCaddyfile(s, opts = {}) {
     `    encode zstd gzip`,
     `    reverse_proxy 127.0.0.1:${backendPort}`,
   ];
+  if (s.cdn === 'cloudflare') {
+    // Trust CF visitor headers only when the TCP peer is actually a CF edge.
+    // The named matcher also makes the runtime cfOnly switch effective without root firewall edits.
+    proxy.unshift(`    @non_cf not remote_ip ${[...CF_V4, ...CF_V6].join(' ')}`,
+      '    request_header @non_cf -CF-Connecting-IP',
+      '    request_header @non_cf -True-Client-IP',
+      '    request_header @non_cf -X-Real-IP',
+      ...(s.cfOnly ? ['    respond @non_cf "Cloudflare origin access only" 403'] : []));
+  }
   const headerNoHsts = ['    header {', '        -Server', '        X-Content-Type-Options "nosniff"', '        Referrer-Policy "no-referrer"', '    }'];
   const headerHsts = ['    header {', '        -Server', '        Strict-Transport-Security "max-age=31536000; includeSubDomains"', '        X-Content-Type-Options "nosniff"', '        Referrer-Policy "no-referrer"', '    }'];
   if (cdnOn) {
@@ -230,9 +242,15 @@ export function applyRequest(req, { dryRun = false } = {}) {
   const caddyBin = p.caddyBin || SYS.caddyBin;
   const result = { id: req.id || null, ok: false, warnings: [], appliedAt: Math.floor(Date.now() / 1000) };
   const writeResult = () => { try { atomicWrite(path.join(dataDir, 'domain-result.json'), JSON.stringify(result, null, 2)); } catch {} };
+  let backups = [], captured = false, reloaded = false;
   try {
+    backups = [confFile, caddyFile, certFile, keyFile, path.join(dataDir, 'domain.json')].map(file => {
+      if (!fs.existsSync(file)) return { file, exists: false };
+      return { file, exists: true, bytes: fs.readFileSync(file), mode: fs.statSync(file).mode & 0o777 };
+    });
+    captured = true;
     let base = {};
-    try { base = JSON.parse(fs.readFileSync(confFile, 'utf8')); } catch {}
+    if (fs.existsSync(confFile)) base = JSON.parse(fs.readFileSync(confFile, 'utf8'));
     const { settings, warnings } = normalizeDomain(req.settings, base);
     result.warnings = warnings;
     result.settings = settings;
@@ -259,21 +277,20 @@ export function applyRequest(req, { dryRun = false } = {}) {
         haveCert = true;
         result.certIssued = true;
       } catch (e) {
-        result.warnings.push(`自动签发 Origin CA 证书失败：${e.message}；将仅启用 HTTP 回源（Flexible）。`);
+        throw new Error(`自动签发 Origin CA 证书失败：${e.message}；原配置保持不变。`);
       }
     } else {
       haveCert = fs.existsSync(certFile) && fs.existsSync(keyFile);
     }
     if ((settings.sslMode === 'full' || settings.sslMode === 'strict') && !haveCert) {
-      result.warnings.push('未提供回源证书，已回退为 Flexible（HTTP 回源）。如需 Full/Strict，请上传 Origin CA 证书或填写 CF API Token。');
-      settings.sslMode = 'flexible';
+      throw new Error('Full/Strict 缺少回源证书，已取消应用，避免静默降级为 HTTP。请提供证书或明确选择 Flexible。');
     }
     result.haveCert = haveCert;
 
     // 写 config + 运行时域名覆盖
     const merged = mergeConfigFile(confFile, settings);
     result.configFile = confFile;
-    try { atomicWrite(path.join(dataDir, 'domain.json'), JSON.stringify(settings, null, 2)); } catch {}
+    atomicWrite(path.join(dataDir, 'domain.json'), JSON.stringify(settings, null, 2));
 
     // 生成并校验 Caddyfile
     const caddyText = buildCaddyfile(settings, { backendPort, certFile, keyFile, haveCert });
@@ -292,6 +309,7 @@ export function applyRequest(req, { dryRun = false } = {}) {
       fs.renameSync(tmpCaddy, caddyFile);
       try { execFileSync('systemctl', ['reload', SYS.caddyService], { stdio: 'pipe' }); }
       catch { execFileSync('systemctl', ['restart', SYS.caddyService], { stdio: 'pipe' }); }
+      reloaded = true;
       // 重启后端以加载新域名（异步，避免阻塞当前进程）
       try { execFileSync('systemctl', ['restart', '--no-block', SYS.service], { stdio: 'pipe' }); } catch {}
     }
@@ -299,6 +317,16 @@ export function applyRequest(req, { dryRun = false } = {}) {
     writeResult();
     return result;
   } catch (e) {
+    if (captured) {
+      try {
+        for (const backup of backups) {
+          if (backup.exists) atomicWrite(backup.file, backup.bytes, backup.mode);
+          else if (fs.existsSync(backup.file)) fs.unlinkSync(backup.file);
+        }
+        if (reloaded && !dryRun) execFileSync('systemctl', ['reload', SYS.caddyService], { stdio: 'pipe' });
+        result.rolledBack = true;
+      } catch (rollback) { result.warnings.push(`回滚失败，请立即检查源站配置：${rollback.message}`); }
+    }
     result.ok = false;
     result.error = e.message || String(e);
     writeResult();

@@ -3,7 +3,7 @@
 #  备忘录 (nui-memo) 一键部署脚本
 #  支持: Debian 11 / 12 / 13, Ubuntu 22.04 / 24.04 / 26.04 (amd64 / arm64)
 #  特性: 自动检测 IP · 自动申请 HTTPS 证书 · 域名或 nip.io 自动分配
-#        管理员界面 + 用户界面 · Telegram 加密存储 · systemd 守护
+#        管理员界面 + 用户界面 · 本地 / Telegram 加密存储 · systemd 守护
 #        管理面板「域名」页：运行时换域名 / CDN / 加密模式 / 回源端口
 #
 #  用法:
@@ -346,6 +346,7 @@ setup_cloudflare_cert() {
   [[ $CLOUDFLARE -eq 1 ]] || return 0
   step "配置 Cloudflare 回源证书"
   HAVE_CF_CERT=0
+  [[ -s "$CF_CERT_FILE" && -s "$CF_KEY_FILE" ]] && HAVE_CF_CERT=1
   if [[ -n "$CF_CERT" || -n "$CF_KEY" ]]; then
     [[ -n "$CF_CERT" && -n "$CF_KEY" ]] || die "--cf-cert 与 --cf-key 需同时提供"
     [[ -f "$CF_CERT" ]] || die "证书文件不存在: $CF_CERT"
@@ -401,7 +402,7 @@ fetch_app() {
   step "部署程序文件"
   local src=""
   local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || true
-  if [[ -n "$script_dir" && -f "$script_dir/server/index.js" && -d "$script_dir/web" ]]; then
+  if [[ $DO_UPDATE -eq 0 && -n "$script_dir" && "$script_dir" != "$(realpath -m "$APP_DIR")" && -f "$script_dir/server/index.js" && -d "$script_dir/web" ]]; then
     src="$script_dir"
     info "使用本地仓库文件: $src"
   else
@@ -415,18 +416,22 @@ fetch_app() {
     FETCH_TMP="$tmp"
   fi
   mkdir -p "$APP_DIR"
+  # 完整复制到临时目录后才替换运行文件，避免下载/复制失败损坏旧安装。
+  local stage; stage="$(mktemp -d "$APP_DIR/.deploy.XXXXXX")"
+  cp -a "$src/server" "$stage/server"
+  cp -a "$src/web" "$stage/web"
   # 备份旧程序（升级）
   if [[ -d "$APP_DIR/server" ]]; then
     rm -rf "$APP_DIR/server.old" "$APP_DIR/web.old"
     mv "$APP_DIR/server" "$APP_DIR/server.old" 2>/dev/null || true
     mv "$APP_DIR/web" "$APP_DIR/web.old" 2>/dev/null || true
   fi
-  cp -r "$src/server" "$APP_DIR/server"
-  cp -r "$src/web" "$APP_DIR/web"
+  mv "$stage/server" "$APP_DIR/server"
+  mv "$stage/web" "$APP_DIR/web"
+  rmdir "$stage"
   # 附带安装器与 SSH 面板脚本，供 n-ui 面板「更新 / 卸载」复用
-  [[ -d "$src/scripts" ]] && cp -r "$src/scripts" "$APP_DIR/scripts"
+  if [[ -d "$src/scripts" ]]; then mkdir -p "$APP_DIR/scripts"; cp -a "$src/scripts/." "$APP_DIR/scripts/"; fi
   [[ -f "$src/install.sh" ]] && cp "$src/install.sh" "$APP_DIR/install.sh"
-  rm -rf "$APP_DIR/server.old" "$APP_DIR/web.old"
   [[ -n "${FETCH_TMP:-}" ]] && rm -rf "$FETCH_TMP"
   ok "程序已部署到 $APP_DIR"
 }
@@ -671,6 +676,7 @@ health_check() {
   for i in $(seq 1 15); do
     if curl -fsS --max-time 5 "http://127.0.0.1:${BACKEND_PORT}/api/health" >/dev/null 2>&1; then
       ok "后端 API 正常"
+      rm -rf "$APP_DIR/server.old" "$APP_DIR/web.old"
       return
     fi
     sleep 1
@@ -697,7 +703,7 @@ print_summary() {
   echo
   echo "  下一步:"
   echo "   1. 打开管理界面，首次进入设置管理员账号密码"
-  echo "   2. 在「机器人」页绑定你的 Telegram Bot Token 与 Chat ID"
+  echo "   2. 在「存储」页选择本地磁盘；或在「机器人」页绑定 Telegram 后使用 TG 存储"
   echo "      (先向机器人发一条消息，再点「自动检测」获取 Chat ID)"
   echo "   3. 打开用户界面注册数字账号，妥善保存密钥，开始使用"
   echo "   4. 如需换域名 / 套 CDN：管理界面「域名」页可随时修改（含 nip.io 换自定义域名）"
@@ -784,7 +790,7 @@ uninstall() {
 main() {
   echo "${C_BOLD}"
   echo "  备忘录 (nui-memo) 一键部署"
-  echo "  端到端加密 · Telegram 存储 · 自动 HTTPS"
+  echo "  端到端加密 · 本地 / Telegram 存储 · 自动 HTTPS"
   echo "${C_RESET}"
   [[ $EUID -eq 0 ]] || die "请以 root 运行：sudo bash install.sh"
   [[ $DO_UNINSTALL -eq 1 ]] && uninstall
@@ -793,6 +799,17 @@ main() {
   install_deps
   install_node
   install_caddy
+  # A program update must not reset runtime domains, third-party CDN, certificates,
+  # custom origin ports or firewall policy selected in the admin panel.
+  if [[ $DO_UPDATE -eq 1 && -f "$CONF_FILE" ]]; then
+    BACKEND_PORT="$("$APP_DIR/node/bin/node" -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).port||8787)' "$CONF_FILE")"
+    fetch_app
+    start_services
+    install_panel
+    health_check
+    ok "程序更新完成；数据、域名、CDN、证书与防火墙配置保持不变"
+    return
+  fi
   resolve_cf_defaults
   if ! detect_ip; then
     die "无法检测公网 IP，请检查网络后重试"

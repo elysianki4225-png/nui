@@ -2,7 +2,7 @@ import http from 'node:http';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { Sessions, RateLimiter, IpBanList, clientIp } from './security.js';
-import { TelegramPool } from './telegram.js';
+import { StoragePool } from './storage.js';
 import { createApi } from './api.js';
 import { createStatic } from './static.js';
 import { sendError, isHttps, VERSION, behindCdn } from './util.js';
@@ -13,7 +13,7 @@ const store = new Store(cfg.dataDir);
 await store.load();
 
 const sessions = new Sessions(store);
-const pool = new TelegramPool(store, cfg);
+const pool = new StoragePool(store, cfg);
 const ipBans = new IpBanList();
 ipBans.rebuild(store.state.ipBans);
 const limiter = new RateLimiter();
@@ -112,7 +112,7 @@ const server = http.createServer(async (req, res) => {
     }
     await handleStatic(req, res, pathname, host.replace(/:\d+$/, ''));
   } catch (e) {
-    if (!res.writableEnded) {
+    if (!res.writableEnded && !res.headersSent) {
       console.error(`[http] ${req.method} ${pathname}:`, e);
       sendError(res, 500, '服务器内部错误', 'INTERNAL');
     } else {
@@ -142,7 +142,11 @@ async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`\n[main] 收到 ${signal}，正在优雅关闭...`);
-  server.close();
+  // Drain active requests before closing metadata; a migration may still checkpoint.
+  let timeout;
+  await Promise.race([new Promise(resolve => server.close(resolve)), new Promise(resolve => { timeout = setTimeout(resolve, 25000); })]);
+  clearTimeout(timeout);
+  pool.draining = true;
   limiter.stop();
   pool.stop();
   await store.close();
