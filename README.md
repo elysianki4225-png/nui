@@ -463,7 +463,7 @@ NUI_CANVAS_MODULE=/tmp/nui-ui-test/node_modules/@napi-rs/canvas node test/theme-
 若日志出现 `EACCES: permission denied, open '/etc/nui-memo/config.json'`，请使用新版安装器升级；它会保留数据并修复配置/数据目录权限，域名改写和 SSH 改密也不再丢失服务账号权限。不要用 `chmod 777` 或将含凭据的配置设为全局可读。
 
 ```bash
-curl -fL https://github.com/elysianki4225-png/nui/releases/download/v2.0.0/install.sh -o /tmp/nui-install-2.0.0.sh
+curl -fL https://github.com/elysianki4225-png/nui/raw/refs/tags/v2.0.0/install.sh -o /tmp/nui-install-2.0.0.sh
 sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
 ```
 
