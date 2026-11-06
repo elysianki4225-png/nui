@@ -219,8 +219,14 @@ export function openMenu(anchor, items) {
 export class ApiError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
+const ENTRY_STORAGE='memo-entry:'+API_BASE;
+export function entryHeaders(){
+  if(!IS_EXPORT)return {};
+  try{const pass=localStorage.getItem(ENTRY_STORAGE);return pass?{'X-Memo-Entry':pass}:{};}catch{return {};}
+}
+export function entryRequired(code){if(code==='ENTRY_REQUIRED'&&typeof window!=='undefined')window.dispatchEvent(new Event('memo-entry-required'));}
 export async function api(method, path, body, { raw = false, signal } = {}) {
-  const headers = { 'X-Memo-Client': 'web' };
+  const headers = { 'X-Memo-Client': 'web', ...entryHeaders() };
   if (IS_EXPORT) {
     const t = localStorage.getItem('memo-token');
     if (t) headers.Authorization = `Bearer ${t}`;
@@ -234,7 +240,8 @@ export async function api(method, path, body, { raw = false, signal } = {}) {
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('application/json')) {
     const data = await res.json();
-    if (!res.ok || data.ok === false) throw new ApiError(res.status, data.error || `请求失败 (${res.status})`, data.code);
+    if (!res.ok || data.ok === false) {entryRequired(data.code);throw new ApiError(res.status, data.error || `请求失败 (${res.status})`, data.code);}
+    if(IS_EXPORT&&data.admissionToken){try{localStorage.setItem(ENTRY_STORAGE,data.admissionToken);}catch{throw new ApiError(400,'导出前端需要允许本地存储以保存访问通行凭证','ENTRY_STORAGE');}}
     if (data.token) { try { localStorage.setItem('memo-token', data.token); } catch {} }
     if (/\/(logout|delete-account)$/.test(path)) { try { localStorage.removeItem('memo-token'); } catch {} }
     return data;

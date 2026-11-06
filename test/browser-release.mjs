@@ -225,5 +225,35 @@ try {
  await user.locator('.nav-rail-item').filter({hasText:'设置'}).click();await user.getByLabel('网名',{exact:true}).waitFor();
  for(const theme of ['light','dark'])for(const width of [320,768,1440]){await user.setViewportSize({width,height:900});await user.evaluate(t=>document.documentElement.dataset.theme=t,theme);await auditFields(user);}
  console.log('PASS user folder dialogs and public profile input visibility in light/dark mobile/desktop');
+ // Entry-screen behavior with controlled server admission state and SDK callbacks.
+ const visitor=await browser.newPage();visitor.on('pageerror',e=>errors.push(e.message));
+ let required=true,meRequests=0;
+ await visitor.addInitScript(base=>{window.__MEMO_CONFIG__={apiBase:base};},base);
+ const gateReply=()=>({ok:true,enabled:true,required,captcha:{enabled:true,provider:'turnstile',siteKey:'gate-test'}});
+ await visitor.route('**/api/entry',r=>{if(r.request().method()==='POST'){required=false;return r.fulfill({json:{...gateReply(),admissionToken:'opaque-export-pass'}});}return r.fulfill({json:{...gateReply(),required:required||r.request().headers()['x-memo-entry']!=='opaque-export-pass'}});});
+ await visitor.route('https://challenges.cloudflare.com/turnstile/v0/api.js*',r=>r.fulfill({contentType:'application/javascript',body:"window.turnstile={render:(el,o)=>{window.finishEntry=o.callback;return 1;},remove:()=>{}};"}));
+ visitor.on('request',r=>{if(r.url().endsWith('/api/user/me'))meRequests++;});
+ await visitor.setViewportSize({width:320,height:740});await visitor.goto(base+'/');
+ await visitor.waitForFunction(()=>typeof window.finishEntry==='function');
+ assert.equal(meRequests,0,'must not recover account before entry verification');assert(await visitor.locator('#app').evaluate(e=>e.hidden&&e.inert));
+ await visitor.getByRole('button',{name:'取消',exact:true}).click();
+ await visitor.waitForFunction(()=>!document.querySelector('.dialog-scrim'));
+ assert(await visitor.locator('#app').evaluate(e=>e.hidden));assert.equal(await visitor.locator('.entry-gate').count(),1);
+ await visitor.getByRole('button',{name:'开始验证',exact:true}).click();await visitor.locator('.dialog-scrim').waitFor();
+ const visitorRecovered=visitor.waitForResponse(r=>r.url().endsWith('/api/user/me'));
+ await visitor.evaluate(()=>window.finishEntry('entry-ok'));await visitor.locator('.entry-gate').waitFor({state:'detached'});await visitorRecovered;
+ assert(meRequests>0);await visitor.reload();await visitor.waitForFunction(()=>!document.querySelector('#app').hidden&&document.querySelector('#app').textContent.length>0);assert.equal(await visitor.locator('.entry-gate').count(),0);
+ await visitor.goto('about:blank');
+ // An IP rejection of a write locks decrypted UI; the write is not retried after admission.
+ let userRequired=true,writes=0;
+ await user.route('**/api/entry',r=>{if(r.request().method()==='POST')userRequired=false;return r.fulfill({json:{ok:true,enabled:true,required:userRequired,captcha:{enabled:true,provider:'turnstile',siteKey:'gate-test'}}});});
+ await user.route('https://challenges.cloudflare.com/turnstile/v0/api.js*',r=>r.fulfill({contentType:'application/javascript',body:"window.turnstile={render:(el,o)=>{window.finishEntry=o.callback;return 1;},remove:()=>{}};"}));
+ await user.route('**/api/user/memos/batch-delete',r=>{writes++;return r.fulfill({status:403,json:{ok:false,code:'ENTRY_REQUIRED',error:'IP changed'}});});
+ const code=await user.evaluate(async()=>{const {POST}=await import('/assets/js/core.js');try{await POST('/api/user/memos/batch-delete',{ids:['fake']});}catch(e){return e.code;}});
+ assert.equal(code,'ENTRY_REQUIRED');await user.waitForFunction(()=>typeof window.finishEntry==='function');
+ assert(await user.locator('#app').evaluate(e=>e.hidden&&e.inert&&e.textContent===''));
+ await Promise.all([user.waitForEvent('load'),user.evaluate(()=>window.finishEntry('new-ip-ok'))]);
+ await user.getByText('Release browser memo',{exact:true}).waitFor();assert.equal(writes,1,'never replay a rejected mutation');
+ console.log('PASS entry screen: first visit blocks account recovery, cancel stays blocked, acceptance/reload, IP rejection locks private UI and never replays writes');
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}
