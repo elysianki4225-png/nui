@@ -372,3 +372,23 @@
 .org-target { outline:2px solid var(--md-primary); outline-offset:-2px; }
 .org-ghost { position:fixed !important; left:0; top:0; margin:0 !important; z-index:20000; pointer-events:none; opacity:.92; box-shadow:0 8px 28px #0004; background:var(--md-surface-container); will-change:transform; overflow:hidden; }
 @media(max-width:599px) { .org-controls .icon-btn { width:36px; height:40px; } }
+
+/* Admin data is untrusted in length (IPv6, errors and audit details).
+   Wrap text, keep controls shrinkable, and confine table scrolling to its wrapper. */
+.admin-content, .admin-page { min-width:0; }
+.admin-page { width:100%; overflow-wrap:anywhere; }
+.admin-page :is(.panel,.m-card,.m-row,.panel-head,.tf,.tf-box,.table-wrap,.kv,.two-col > *) { min-width:0; max-width:100%; }
+.admin-page .table-wrap { width:100%; }
+.admin-page .two-col { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.admin-page .kv-grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr)); }
+.admin-page :is(.mono,.a-action,.a-detail,.tf-helper,.auth-note) { overflow-wrap:anywhere; }
+.admin-page .panel-head { flex-wrap:wrap; }
+.admin-page .audit-item { display:grid; grid-template-columns:minmax(0,160px) minmax(0,180px) minmax(0,1fr); }
+.admin-page .audit-item > * { min-width:0; overflow-wrap:anywhere; }
+.admin-page .audit-item .a-time { white-space:normal; }
+.admin-app .dialog { min-width:0; overflow-wrap:anywhere; }
+.admin-app .dialog :is(.dialog-content,.tf,.tf-box) { min-width:0; max-width:100%; }
+.admin-app :is(.admin-page,.dialog) :is(pre,textarea) { max-width:100%; white-space:pre-wrap; overflow-wrap:anywhere; }
+.admin-app :is(.admin-page,.dialog) .tf-input { min-width:0; max-width:100%; }
+@media(max-width:900px) { .admin-page .two-col { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:600px) { .admin-page .audit-item { grid-template-columns:minmax(0,1fr); gap:4px; } }

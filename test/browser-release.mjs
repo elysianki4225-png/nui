@@ -30,6 +30,36 @@ try {
   await admin.locator('.nav-rail-item').filter({hasText:label}).click();await admin.waitForTimeout(120);
   assert(await admin.locator('.admin-page').textContent(),label);
  }
+ // Long IPv6, unbroken notes/logs and failed batch input must not widen the page.
+ const ipv6='2001:0db8:1234:5678:9abc:def0:1234:0001-2001:0db8:1234:5678:9abc:def0:1234:ffff';
+ const longText='unbroken-log-segment'.repeat(150);
+ await admin.route('**/api/admin/ip-bans?*',route=>route.fulfill({json:{ok:true,items:[{id:'overflow-test',rule:ipv6,family:6,note:longText,createdAt:1,enabled:true}],total:1}}));
+ await admin.route('**/api/admin/ip-bans',route=>route.fulfill({json:{ok:true,added:0,errors:[{rule:ipv6+' '+longText,error:longText}]}}));
+ await admin.route('**/api/admin/audit?*',route=>route.fulfill({json:{ok:true,items:[{ts:1,actor:ipv6,action:longText,detail:longText}]}}));
+ const fits=async()=>{
+  const bad=await admin.evaluate(()=>[...document.querySelectorAll('.admin-content,.admin-page,.m-card,.audit-item,.a-detail,.dialog,.dialog-content')].filter(e=>e.getClientRects().length).filter(e=>{const r=e.getBoundingClientRect();return r.right>innerWidth+1||r.left< -1||e.scrollWidth>e.clientWidth+1;}).map(e=>e.className));
+  assert.deepEqual(bad,[],'long admin content overflow');
+ };
+ for(const [width,height] of [[320,700],[360,780],[768,1024],[1440,900]]) {
+  await admin.setViewportSize({width,height});
+  // Drawer and desktop use the same navigation state; desktop rail is hidden on phones.
+  if(width<1024) {await admin.getByRole('button',{name:'打开菜单',exact:true}).click();await admin.locator('.nav-drawer-item').filter({hasText:'IP 封禁'}).click();}
+  else await admin.locator('.nav-rail-item').filter({hasText:'IP 封禁'}).click();
+  await admin.getByText(ipv6,{exact:true}).last().waitFor({state:'attached'});await fits();
+  await admin.getByRole('button',{name:'添加规则',exact:true}).click();
+  await admin.locator('.dialog textarea').fill(ipv6+' '+longText);
+  await admin.waitForTimeout(220);await fits();
+  await admin.getByRole('button',{name:'添加',exact:true}).click();
+  await admin.waitForFunction(()=>document.querySelector('.dialog-content')?.textContent.includes('条失败'));await fits();
+  await admin.getByRole('button',{name:'取消',exact:true}).click();
+  if(width<1024){await admin.getByRole('button',{name:'打开菜单',exact:true}).click();await admin.locator('.nav-drawer-item').filter({hasText:'审计'}).click();}
+  else await admin.locator('.nav-rail-item').filter({hasText:'审计'}).click();
+  await admin.locator('.a-detail').waitFor();await fits();
+  assert((await admin.locator('.a-detail').textContent()).includes(longText),'log text must not be truncated');
+ }
+ await admin.unroute('**/api/admin/ip-bans?*');await admin.unroute('**/api/admin/audit?*');await admin.unroute('**/api/admin/ip-bans');
+ await admin.setViewportSize({width:1440,height:900});
+ console.log('PASS admin IPv6 and long logs/dialog input fit 320/360/768/1440px without truncation');
  await admin.locator('.nav-rail-item').filter({hasText:'域名'}).click();
  await admin.locator('.acceleration > summary').click();
  await admin.locator('.acceleration textarea').waitFor();

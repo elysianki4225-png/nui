@@ -8,6 +8,7 @@ import {
   formatBytes, formatDate, formatRelative, formatAccount, copyText, debounce, downloadBlob,
 } from '/assets/js/core.js';
 
+document.body.classList.add('admin-app');
 const $app = document.getElementById('app');
 const S = { view: 'loading', page: 'overview', status: null, username: null, el: {}, data: {} };
 
