@@ -326,7 +326,8 @@
   .memo-toolbar .memo-count { margin-right: auto; }
 }
 .profile-editor { padding: 20px; display: grid; gap: 12px; min-width: 0; }
-.profile-editor .tf-input { display: block; border-bottom: 1px solid var(--md-outline); }
+.profile-editor label { display: block; margin-bottom: 16px; }
+.profile-editor .tf-input { margin-top: 6px; }
 .profile-editor input[type=file] { width: 100%; min-width: 0; }
 .profile-avatar { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; flex: none; }
 .profile-avatar[hidden] { display: none; }
@@ -357,7 +358,7 @@
 .acceleration-body { display:grid; gap:12px; min-width:0; }
 .acceleration-field { display:grid; gap:6px; min-width:0; }
 .acceleration-field[hidden] { display:none; }
-.acceleration-field .tf-input { border:1px solid var(--md-outline); border-radius:8px; padding:10px; box-sizing:border-box; }
+
 .acceleration-field input[type=checkbox] { width:20px; height:20px; }
 .acceleration .mono, .acceleration li { overflow-wrap:anywhere; }
 .acceleration .kv { margin-top:8px; min-width:0; }

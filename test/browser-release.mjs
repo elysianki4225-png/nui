@@ -15,6 +15,18 @@ const libs=await inflate(path.join(prefix,'node_modules/@sparticuz/chromium/bin/
 process.env.LD_LIBRARY_PATH=path.join(libs,'lib')+':'+(process.env.LD_LIBRARY_PATH||'');
 const dir=await mkdtemp(path.join(tmpdir(),'nui-browser-release-')), base='http://localhost:8796';
 const child=spawn(process.execPath,['server/index.js'],{env:{...process.env,MEMO_HOST:'127.0.0.1',MEMO_PORT:'8796',MEMO_DATA_DIR:dir,MEMO_DEV:'1'},stdio:['ignore','pipe','pipe']});
+// A layout-only test misses invisible borderless inputs. Inspect the rendered control.
+async function auditFields(page) {
+ const bad=await page.locator('.tf-input').evaluateAll(inputs=>inputs.filter(el=>el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden').flatMap(el=>{
+  const box=el.closest('.tf-box')||el,css=getComputedStyle(box),r=box.getBoundingClientRect();
+  const invisible=['Top','Right','Bottom','Left'].some(side=>parseFloat(css['border'+side+'Width'])<1||css['border'+side+'Style']==='none'||css['border'+side+'Color']==='rgba(0, 0, 0, 0)');
+  const overflow=r.left< -1||r.right>innerWidth+1;
+  const placeholder=getComputedStyle(el,'::placeholder').color;
+  const lostHint=!el.closest('.tf-box')&&el.placeholder?.trim()&&placeholder==='rgba(0, 0, 0, 0)';
+  return invisible||overflow||lostHint?[{label:el.getAttribute('aria-label')||el.placeholder,invisible,overflow,lostHint}]:[];
+ }));
+ assert.deepEqual(bad,[],'form controls need visible borders, hints and viewport bounds');
+}
 let logs='',browser;child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);
 try {
  for(let i=0;i<100;i++){try{if((await fetch(base+'/api/health')).ok)break;}catch{}await new Promise(r=>setTimeout(r,50));}
@@ -28,8 +40,28 @@ try {
  });await admin.reload();
  for(const label of ['概览','用户','IP 封禁','机器人','域名','前端/跨域','广告','存储','主题','风控','设置','审计']) {
   await admin.locator('.nav-rail-item').filter({hasText:label}).click();await admin.waitForTimeout(120);
-  assert(await admin.locator('.admin-page').textContent(),label);
+  assert(await admin.locator('.admin-page').textContent(),label);await auditFields(admin);
  }
+ // CAPTCHA empty fields, keyboard focus, responsive bounds and real disabled-save roundtrip.
+ await admin.locator('.nav-rail-item').filter({hasText:'风控'}).click();
+ await admin.getByLabel('Site Key',{exact:true}).waitFor();
+ for(const theme of ['light','dark'])for(const width of [320,360,768,1440]){
+  await admin.setViewportSize({width,height:900});
+  await admin.evaluate(t=>document.documentElement.dataset.theme=t,theme);
+  await auditFields(admin);
+  const site=admin.getByLabel('Site Key',{exact:true});await site.fill('test-public-key');await site.focus();
+  assert.notEqual(await site.evaluate(e=>getComputedStyle(e).boxShadow),'none','focused field must be visible');
+  await admin.keyboard.press('Tab');assert(await admin.getByLabel('Secret Key',{exact:true}).evaluate(e=>e===document.activeElement));
+  await site.fill('');
+ }
+ await admin.getByLabel('启用注册和两端登录的人机验证',{exact:true}).check();
+ assert(await admin.getByRole('button',{name:'验证配置并保存',exact:true}).isVisible());
+ await admin.getByLabel('启用注册和两端登录的人机验证',{exact:true}).uncheck();
+ const saved=admin.waitForResponse(r=>r.url().endsWith('/api/admin/captcha')&&r.request().method()==='PATCH');
+ await admin.getByRole('button',{name:'保存（关闭验证）',exact:true}).click();assert.equal((await saved).status(),200);
+ await admin.getByLabel('Site Key',{exact:true}).waitFor();
+ await admin.evaluate(()=>document.documentElement.dataset.theme='light');await admin.setViewportSize({width:1440,height:900});
+ console.log('PASS form visibility: all admin pages; CAPTCHA light/dark 320/360/768/1440px, placeholders, focus/Tab and disabled-save');
  // Long IPv6, unbroken notes/logs and failed batch input must not widen the page.
  const ipv6='2001:0db8:1234:5678:9abc:def0:1234:0001-2001:0db8:1234:5678:9abc:def0:1234:ffff';
  const longText='unbroken-log-segment'.repeat(150);
@@ -123,6 +155,7 @@ try {
  // Organization is encrypted by the real worker and survives reload.
  for(const name of ['Folder A','Folder B']) {
   await user.getByRole('button',{name:'新建文件夹',exact:true}).click();
+  await user.getByLabel('文件夹名称').waitFor();await auditFields(user);
   await user.getByLabel('文件夹名称').fill(name);
   await user.getByRole('button',{name:'保存',exact:true}).click();
   await user.getByText(name,{exact:true}).waitFor();
@@ -164,5 +197,9 @@ try {
  await user.getByText('Release browser memo',{exact:true}).waitFor();
  assert.equal(await user.getByText('Renamed folder',{exact:true}).count(),0);
  console.log('PASS Chromium: encrypted folders, membership moves, mouse + touch long-press sorting, drag cleanup and persisted order');
+ await user.setViewportSize({width:1440,height:900});
+ await user.locator('.nav-rail-item').filter({hasText:'设置'}).click();await user.getByLabel('网名',{exact:true}).waitFor();
+ for(const theme of ['light','dark'])for(const width of [320,768,1440]){await user.setViewportSize({width,height:900});await user.evaluate(t=>document.documentElement.dataset.theme=t,theme);await auditFields(user);}
+ console.log('PASS user folder dialogs and public profile input visibility in light/dark mobile/desktop');
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}

@@ -398,7 +398,7 @@ async function changeOrganization(fn) {
   catch(e){toast(e.message,{type:'error'});}
 }
 function editFolder(folder) {
-  const input=h('input',{class:'tf-input',value:folder?.name||'',maxLength:80,'aria-label':'文件夹名称'});
+  const input=h('input',{class:'tf-input',value:folder?.name||'',maxLength:80,placeholder:'输入文件夹名称','aria-label':'文件夹名称'});
   openDialog({title:folder?'重命名文件夹':'新建文件夹',content:input,actions:[{label:'取消',variant:'text'},{label:'保存',variant:'filled',keepOpen:true,onClick:async close=>{
     const name=input.value.trim();if(!name){toast('请输入文件夹名称');return false;}
     const org=S.organization;

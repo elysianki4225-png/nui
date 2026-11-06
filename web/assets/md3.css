@@ -221,6 +221,19 @@ input, textarea, select { font-family: inherit; }
 }
 .tf-input::placeholder { color: transparent; }
 textarea.tf-input { resize: vertical; min-height: 80px; padding-top: 20px; }
+/* Standalone controls must remain visible without the floating-label .tf-box. */
+.tf-input:not(.tf-box .tf-input) {
+  display: block; box-sizing: border-box; min-height: 48px; max-width: 100%;
+  border: 1px solid var(--md-outline); border-radius: var(--md-shape-xs);
+  background: var(--md-surface); padding: 12px; flex: none;
+}
+.tf-input:not(.tf-box .tf-input)::placeholder { color: var(--md-on-surface-variant); opacity: 1; }
+.tf-input:not(.tf-box .tf-input):hover { border-color: var(--md-on-surface); }
+.tf-input:not(.tf-box .tf-input):focus {
+  border-color: var(--md-primary); box-shadow: inset 0 0 0 1px var(--md-primary);
+}
+.tf-input:not(.tf-box .tf-input):disabled { opacity: .6; cursor: not-allowed; }
+.tf-field-label { display: block; margin-bottom: 6px; overflow-wrap: anywhere; }
 .tf-label {
   position: absolute; left: 12px; top: 50%; transform: translateY(-50%); padding: 0 4px;
   color: var(--md-on-surface-variant); font-size: 16px; pointer-events: none; background: var(--tf-bg);
