@@ -57,6 +57,20 @@ try {
  await admin.getByLabel('启用注册和两端登录的人机验证',{exact:true}).check();
  assert(await admin.getByRole('button',{name:'验证配置并保存',exact:true}).isVisible());
  await admin.getByLabel('启用注册和两端登录的人机验证',{exact:true}).uncheck();
+ // Diagnostic failure remains readable in the form and does not expose/erase the entered secret.
+ const failureText='服务商确认 Site Key 与 Secret Key 不匹配，请使用同一账户下适用的密钥';
+ await admin.route('**/api/admin/captcha',async route=>{
+  if(route.request().method()==='PATCH')return route.fulfill({status:400,json:{ok:false,error:failureText,code:'CAPTCHA_KEY_MISMATCH'}});
+  return route.continue();
+ });
+ await admin.getByLabel('Secret Key',{exact:true}).fill('private-input-test');
+ await admin.getByRole('button',{name:'保存（关闭验证）',exact:true}).click();
+ const diagnostic=admin.locator('[data-captcha-section] [role=status]');
+ await diagnostic.filter({hasText:'CAPTCHA_KEY_MISMATCH'}).waitFor();
+ assert((await diagnostic.textContent()).includes(failureText));assert(!(await diagnostic.textContent()).includes('private-input-test'));
+ assert.equal(await admin.getByLabel('Secret Key',{exact:true}).inputValue(),'private-input-test');
+ await admin.unroute('**/api/admin/captcha');await admin.getByLabel('Secret Key',{exact:true}).fill('');
+ console.log('PASS CAPTCHA failure stays inline with safe error code and preserves form for correction');
  const saved=admin.waitForResponse(r=>r.url().endsWith('/api/admin/captcha')&&r.request().method()==='PATCH');
  await admin.getByRole('button',{name:'保存（关闭验证）',exact:true}).click();assert.equal((await saved).status(),200);
  await admin.getByLabel('Site Key',{exact:true}).waitFor();
