@@ -1,3 +1,5 @@
+import {checkPetFeatures} from './pet-features.mjs';
+import {checkDragPreview} from './drag-preview.mjs';
 // Optional isolated real-browser audit. Set NUI_BROWSER_DEPS to npm prefix containing
 // playwright-core and @sparticuz/chromium. No production data or external services used.
 import { createRequire } from 'node:module';
@@ -38,7 +40,7 @@ try {
   await post('/api/admin/setup',{username:'admin',password:'isolated-test-password'});
   await post('/api/admin/storage/start',{target:'local'});await post('/api/admin/storage/step',{});
  });await admin.reload();
- for(const label of ['概览','用户','IP 封禁','机器人','域名','前端/跨域','广告','存储','主题','风控','设置','审计']) {
+ for(const label of ['概览','用户','IP 封禁','机器人','域名','前端/跨域','广告','存储','主题','风控','设置','系统维护','审计']) {
   await admin.locator('.nav-rail-item').filter({hasText:label}).click();await admin.waitForTimeout(120);
   assert(await admin.locator('.admin-page').textContent(),label);await auditFields(admin);
  }
@@ -127,8 +129,8 @@ try {
  assert.equal(await admin.getByLabel('证书 PEM（certificate）',{exact:true}).inputValue(),'draft-admin-cert');
  for(const [width,height] of [[360,780],[768,1024],[1440,900],[780,360]]) {await admin.setViewportSize({width,height});assert(await admin.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
  await admin.setViewportSize({width:1440,height:900});
- await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.locator('input[type=file]').waitFor();await admin.getByLabel('素材用途').selectOption('pet');
- await admin.locator('input[type=file]').setInputFiles({name:'pet.gif',mimeType:'image/gif',buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')});
+ await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.getByLabel('选择素材',{exact:true}).waitFor();await admin.getByLabel('素材用途').selectOption('pet');
+ await admin.getByLabel('选择素材',{exact:true}).setInputFiles({name:'pet.gif',mimeType:'image/gif',buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')});
  await admin.getByRole('button',{name:'本机压缩 / 抠图并预览'}).click();
  await admin.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='确认预览并上传').disabled);
  await admin.getByRole('button',{name:'确认预览并上传'}).click();await admin.getByText('素材已上传。桌宠需开启上方开关；背景按设备自动显示。').waitFor();
@@ -175,6 +177,15 @@ try {
  for(let i=0;i<8;i++)await user.locator('.memo-toolbar .chip').first().click();
  assert.equal(await user.locator('.search-bar').count(),1);assert(!(await user.locator('body').textContent()).includes('nullnull'));
  await user.reload();await user.getByText('Release browser memo',{exact:true}).waitFor();
+ // Desktop context menus, keyboard fallback and encrypted rename round trip.
+ const contextRow=user.locator('.memo-item').filter({hasText:'Release browser memo'});
+ await contextRow.click({button:'right'});await user.getByRole('menuitem',{name:'重命名',exact:true}).click();
+ await user.getByLabel('新名称').fill('Renamed private title');await user.getByRole('button',{name:'保存',exact:true}).click();
+ await user.getByText('Renamed private title',{exact:true}).waitFor();await user.reload();await user.getByText('Renamed private title',{exact:true}).waitFor();
+ await user.locator('.memo-item').filter({hasText:'Renamed private title'}).focus();await user.keyboard.press('Shift+F10');
+ await user.getByRole('menuitem',{name:'重命名',exact:true}).click();await user.getByLabel('新名称').fill('Release browser memo');await user.getByRole('button',{name:'保存',exact:true}).click();
+ await user.getByText('Release browser memo',{exact:true}).waitFor();
+ console.log('PASS Drive context menu: mouse/Shift-F10, encrypted rename and persisted round trip');
  await user.setViewportSize({width:360,height:780});assert(await user.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
  // Organization is encrypted by the real worker and survives reload.
  for(const name of ['Folder A','Folder B']) {
@@ -272,5 +283,30 @@ try {
  await user.waitForFunction(()=>{const img=document.querySelector('.profile-avatar');return img&&!img.hidden&&img.complete&&img.naturalWidth>0;});
  assert.equal(avatarRequests,1);assert((await user.locator('.profile-avatar').getAttribute('src')).startsWith('data:image/'));
  console.log('PASS exported avatar uses authenticated admission-aware fetch and renders a local data URL');
+ // Functional calculator camouflage through the real backend, retaining normal authentication.
+ await admin.setViewportSize({width:1440,height:900});await admin.goto(base+'/admin/');
+ await admin.locator('.nav-rail-item').filter({hasText:'系统维护'}).click();await admin.getByLabel('计算器暗号').waitFor();
+ for(const width of [320,360,768,1440]){await admin.setViewportSize({width,height:900});await auditFields(admin);assert(await admin.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
+ await admin.getByLabel('未登录时显示计算器').check();await admin.getByLabel('计算器暗号').fill('87654321');await admin.getByLabel('伪装设置认证密码').fill('isolated-test-password');
+ await admin.getByRole('button',{name:'保存伪装设置',exact:true}).click();await admin.getByRole('status').filter({hasText:'已保存。退出'}).waitFor();
+ const calc=await browser.newPage();calc.on('pageerror',e=>errors.push(e.message));await calc.goto(base+'/admin/');
+ // Chromium's single-process test build shares cookie state across contexts; explicitly log out.
+ await calc.evaluate(()=>fetch('/api/admin/logout',{method:'POST',headers:{'X-Memo-Client':'test'}}));await calc.reload();await calc.getByLabel('计算器输入').waitFor();
+ assert.equal(await calc.locator('input[type=password]').count(),0);await calc.getByLabel('计算器输入').fill('2+3*4');await calc.getByRole('button',{name:'=',exact:true}).click();assert.equal(await calc.getByLabel('计算器输入').inputValue(),'14');
+ for(const width of [320,360,768,1440]){await calc.setViewportSize({width,height:700});assert(await calc.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
+ assert.equal(await calc.evaluate(async()=> (await fetch('/api/admin/login',{method:'POST',headers:{'X-Memo-Client':'test','Content-Type':'application/json'},body:'{}'})).status),404);
+ await calc.getByLabel('计算器输入').fill('87654321');await calc.getByRole('button',{name:'=',exact:true}).click();await calc.locator('input[autocomplete=username]').waitFor();
+ assert.equal(await calc.locator('.shell-admin').count(),0);assert.equal(await calc.evaluate(async()=> (await fetch('/api/admin/settings')).status),401);
+ await admin.evaluate(async()=>{for(const [p,b] of [['/api/admin/disguise/unlock',{code:'87654321'}],['/api/admin/login',{username:'admin',password:'isolated-test-password'}]]){const r=await fetch(p,{method:'POST',headers:{'X-Memo-Client':'test','Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw Error(await r.text());}});
+ await admin.reload();await admin.locator('.nav-rail-item').filter({hasText:'系统维护'}).click();await admin.getByLabel('计算器暗号').waitFor();
+ await admin.getByLabel('未登录时显示计算器').uncheck();await admin.getByLabel('伪装设置认证密码').fill('isolated-test-password');
+ const disable=admin.waitForResponse(r=>r.url().endsWith('/api/admin/disguise')&&r.request().method()==='PATCH');await admin.getByRole('button',{name:'保存伪装设置',exact:true}).click();assert.equal((await disable).status(),200);await calc.goto('about:blank');
+ console.log('PASS maintenance responsive settings and calculator real arithmetic/secret unlock/backend enforcement/still-requires-login');
+ await checkPetFeatures(admin,user,base);
+ const offlineAdmin=await browser.newPage();offlineAdmin.on('pageerror',e=>errors.push(e.message));
+ await offlineAdmin.route('**/api/admin/status',route=>route.abort());await offlineAdmin.goto(base+'/admin/');await offlineAdmin.getByRole('button',{name:'重试',exact:true}).waitFor();
+ assert.equal(await offlineAdmin.locator('input[type=password],.shell-admin').count(),0,'unknown admin state must not render login or admin shell');await offlineAdmin.unroute('**/api/admin/status');await offlineAdmin.getByRole('button',{name:'重试',exact:true}).click();await offlineAdmin.locator('.shell-admin').waitFor();await offlineAdmin.goto('about:blank');
+ console.log('PASS admin status failure stays closed and retry recovers');
+ await checkDragPreview(user);
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}

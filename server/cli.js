@@ -22,6 +22,7 @@ async function resetAdmin() {
   store.log({ t: 'admin.set', admin: { username: user, passHash: hashSecret(pass), createdAt: prev?.createdAt || nowSec() } });
   // Emergency recovery also disables a misconfigured CAPTCHA without erasing its keys.
   if(store.state.settings.captcha)store.log({t:'settings.set',settings:{captcha:{...store.state.settings.captcha,enabled:false,version:(store.state.settings.captcha.version||0)+1},riskBlocks:[]}});
+  // Replacing admin above also disables calculator disguise for SSH recovery.
   // 重置密码后使所有管理员会话失效
   for (const [hash, s] of Object.entries(store.state.sessions)) {
     if (s.kind === 'admin') store.log({ t: 'session.delete', tokenHash: hash });

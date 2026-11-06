@@ -19,6 +19,11 @@ const bundle = entry => buildSync({entryPoints:[entry],bundle:true,write:false,f
   assert.equal(w.document.querySelectorAll('.site-pet').length,1); assert.equal(w.document.querySelectorAll('#site-appearance').length,1);
   assert(w.document.querySelector('#site-appearance').textContent.includes('max-width:599px'));
   w.Appearance.applyAppearance({assets:{},petEnabled:false}); assert.equal(w.document.querySelectorAll('.site-pet').length,0);
+  const originalFetch=w.fetch;let release;
+  w.fetch=()=>new Promise(resolve=>{release=resolve;});
+  const pending=w.Appearance.loadAppearance(true);w.Appearance.applyAppearance({},true);
+  release({ok:true,headers:{get:()=> 'application/json'},json:async()=>({ok:true,appearance:{petEnabled:true,petOnAdmin:true,assets:{pet:'/old-pet'}}})});await pending;
+  assert.equal(w.document.querySelectorAll('.site-pet').length,0,'stale appearance fetch must not restore pet over calculator/reset');w.fetch=originalFetch;
   w.eval(output.outputFiles[0].text); const page=w.document.querySelector('main'); const cleanup=w.Customize.renderAppearance(page);
   await new Promise(r=>setTimeout(r,20));
   const input=page.querySelector('input[type=file]'); assert(input);

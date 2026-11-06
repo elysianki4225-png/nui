@@ -31,7 +31,12 @@ export function installOrganizationDrag(container, drop) {
   const cleanup=()=>{const pointer=state?.id;state=null;if(pointer!=null){try{container.releasePointerCapture(pointer);}catch{}}clearTimeout(timer);cancelAnimationFrame(raf);ghost?.remove();ghost=null;target?.classList.remove('org-target');target=null;state=null;};
   const frame=()=>{
     if(!state||!ghost)return;
-    ghost.style.transform=`translate3d(${state.x+12}px,${state.y+12}px,0)`;
+    const v=window.visualViewport,left=v?.offsetLeft||0,top=v?.offsetTop||0;
+    const width=v?.width||window.innerWidth,height=v?.height||window.innerHeight;
+    ghost.style.width=Math.max(0,Math.min(280,width-16))+'px';ghost.style.maxHeight=Math.max(0,height-16)+'px';
+    const x=Math.max(left+8,Math.min(state.x+12,left+width-ghost.offsetWidth-8));
+    const y=Math.max(top+8,Math.min(state.y-ghost.offsetHeight-16,top+height-ghost.offsetHeight-8));
+    ghost.style.transform=`translate3d(${x}px,${y}px,0)`;
     const hit=document.elementFromPoint(state.x,state.y)?.closest('[data-order-key]');
     if(hit!==target){target?.classList.remove('org-target');target=hit&&container.contains(hit)?hit:null;target?.classList.add('org-target');}
     const r=container.getBoundingClientRect();
@@ -39,16 +44,30 @@ export function installOrganizationDrag(container, drop) {
     raf=requestAnimationFrame(frame);
   };
   const down=e=>{
-    const handle=e.target.closest('.org-drag');if(!handle||e.button!==0)return;
+    const handle=e.target.closest('.org-drag');if(state||!handle||e.button!==0)return;
     cleanup();suppress=false;clearTimeout(suppressTimer);const row=handle.closest('[data-order-key]');if(!row)return;
-    state={id:e.pointerId,key:row.dataset.orderKey,x:e.clientX,y:e.clientY};
+    const rect=row.getBoundingClientRect();
+    state={id:e.pointerId,key:row.dataset.orderKey,x:e.clientX,y:e.clientY,sourceY:rect.top+container.scrollTop,sourceX:rect.left};
     try{container.setPointerCapture(e.pointerId);}catch{cleanup();return;}
-    timer=setTimeout(()=>{if(!state)return;ghost=row.cloneNode(true);ghost.classList.add('org-ghost');ghost.style.width=Math.min(row.getBoundingClientRect().width,260)+'px';ghost.setAttribute('aria-hidden','true');document.body.append(ghost);suppress=true;frame();},180);
+    timer=setTimeout(()=>{
+      if(!state||!row.isConnected){cleanup();return;}
+      // Never clone the full virtual row: its height:100% becomes viewport-sized
+      // when appended to body, and cloned controls squeeze text on narrow screens.
+      ghost=document.createElement('div');ghost.className='org-ghost';ghost.setAttribute('aria-hidden','true');ghost.inert=true;
+      const visual=row.querySelector('.memo-type img,.cell-media img')||row.querySelector('.memo-type .icon,.cell-media .icon');
+      if(visual){const thumb=document.createElement('div');thumb.className='org-ghost-thumb';thumb.append(visual.cloneNode(true));ghost.append(thumb);}
+      const body=document.createElement('div');body.className='org-ghost-body';
+      const title=document.createElement('div');title.className='org-ghost-title';title.textContent=row.querySelector('.memo-title,.cell-title')?.textContent||'移动项目';
+      const sub=document.createElement('div');sub.className='org-ghost-sub';sub.textContent=row.querySelector('.memo-sub,.cell-sub')?.textContent||'调整顺序';
+      body.append(title,sub);ghost.append(body);document.body.append(ghost);suppress=true;frame();
+    },180);
   };
   const move=e=>{if(state&&e.pointerId===state.id){state.x=e.clientX;state.y=e.clientY;e.preventDefault();}};
-  const up=e=>{if(!state||e.pointerId!==state.id)return;const from=state.key,to=target?.dataset.orderKey,active=!!ghost;cleanup();suppressTimer=setTimeout(()=>{suppress=false;},0);if(active&&to&&from!==to)drop(from,to);};
-  const cancel=()=>{cleanup();suppress=false;clearTimeout(suppressTimer);};
+  const up=e=>{if(!state||e.pointerId!==state.id)return;const from=state.key,to=target?.dataset.orderKey,active=!!ghost;const r=target?.getBoundingClientRect();const y=r?r.top+container.scrollTop:0;const after=!!r&&(y>state.sourceY+1||(Math.abs(y-state.sourceY)<=1&&r.left>state.sourceX));cleanup();suppressTimer=setTimeout(()=>{suppress=false;},0);if(active&&to&&from!==to)drop(from,to,after);};
+  const cancel=()=>{if(!state)return;cleanup();suppress=false;clearTimeout(suppressTimer);};
   const click=e=>{if(suppress){e.preventDefault();e.stopPropagation();suppress=false;}};
+  const hidden=()=>{if(document.hidden)cancel();};
+  window.addEventListener('blur',cancel);document.addEventListener('visibilitychange',hidden);
   container.addEventListener('pointerdown',down);container.addEventListener('pointermove',move,{passive:false});container.addEventListener('pointerup',up);container.addEventListener('pointercancel',cancel);container.addEventListener('lostpointercapture',cancel);container.addEventListener('click',click,true);
-  return ()=>{cancel();container.removeEventListener('pointerdown',down);container.removeEventListener('pointermove',move);container.removeEventListener('pointerup',up);container.removeEventListener('pointercancel',cancel);container.removeEventListener('lostpointercapture',cancel);container.removeEventListener('click',click,true);};
+  return ()=>{cleanup();suppress=false;clearTimeout(suppressTimer);window.removeEventListener('blur',cancel);document.removeEventListener('visibilitychange',hidden);container.removeEventListener('pointerdown',down);container.removeEventListener('pointermove',move);container.removeEventListener('pointerup',up);container.removeEventListener('pointercancel',cancel);container.removeEventListener('lostpointercapture',cancel);container.removeEventListener('click',click,true);};
 }

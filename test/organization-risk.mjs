@@ -43,6 +43,16 @@ try{
  assert.equal((await a('DELETE','/api/admin/appearance/assets/logo')).status,200);
  assert.equal((await guest('GET','/api/theme-assets/logo')).status,404);
  console.log('PASS logo follows storage pipeline, proxy read, admin-only write, reset');
+ const wav=Buffer.alloc(44+320);wav.write('RIFF');wav.writeUInt32LE(wav.length-8,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(16000,24);wav.writeUInt32LE(32000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(320,40);
+ assert.equal((await u('PUT','/api/admin/appearance/assets/sound',wav)).status,401);
+ for(const bytes of [png,Buffer.from('<script>bad</script>'),Buffer.concat([wav,Buffer.from('extra')])])assert.equal((await a('PUT','/api/admin/appearance/assets/sound',bytes)).data.code,'BAD_AUDIO');
+ const bad=Buffer.from(wav);bad.writeUInt32LE(48000,24);assert.equal((await a('PUT','/api/admin/appearance/assets/sound',bad)).status,400);
+ assert.equal((await a('PUT','/api/admin/appearance/assets/sound',wav)).status,200);assert.deepEqual(Buffer.from((await guest('GET','/api/theme-assets/sound')).data),wav);
+ assert((await guest('GET','/api/appearance')).data.appearance.assets.sound.includes('/api/theme-assets/sound'));
+ await stop();await start();assert.deepEqual(Buffer.from((await guest('GET','/api/theme-assets/sound')).data),wav);
+ assert.equal((await a('DELETE','/api/admin/appearance/assets/sound')).status,200);assert.equal((await guest('GET','/api/theme-assets/sound')).status,404);
+ console.log('PASS sound: admin-only upload, canonical PCM/length/rate validation, proxied bytes, persistence and deletion');
+
  await a('PATCH','/api/admin/risk',{enabled:true,autoBlock:true});
  for(let i=0;i<20;i++)await guest('POST','/api/user/login',{account:String(1000000000000000+i),proof:'c'.repeat(64)});
  assert.equal((await guest('GET','/api/user/me')).data.code,'RISK_BLOCKED');
