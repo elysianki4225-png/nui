@@ -1,6 +1,10 @@
+import {attachPet} from './pet.js';
 import { API_BASE, GET } from './core.js';
 
-let dispose = () => {};
+let dispose = () => {},lastTheme=null,lastAdmin=false;
+export function getAppearancePreferences(){let saved={};try{saved=JSON.parse(localStorage.getItem('memo-appearance-preferences'))||{};}catch{}return {background:saved.background!==false,pet:saved.pet!==false,sound:saved.sound===true};}
+export function setAppearancePreference(key,value){if(!['background','pet','sound'].includes(key))return;const prefs=getAppearancePreferences();prefs[key]=!!value;localStorage.setItem('memo-appearance-preferences',JSON.stringify(prefs));if(lastTheme&&!lastAdmin)applyAppearance(lastTheme,false);}
+
 function mix(hex, white, weight) {
   const n = parseInt(hex.slice(1), 16);
   return '#' + [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.round(v * weight + (white ? 255 : 0) * (1 - weight)).toString(16).padStart(2, '0')).join('');
@@ -14,7 +18,12 @@ export async function loadAppearance(admin = false) {
   try { const r = await GET('/api/appearance'); applyAppearance(r.appearance, admin); } catch { /* existing theme is safe if offline */ }
 }
 export function applyAppearance(theme, admin = false) {
-  dispose();
+  dispose();lastTheme=theme;lastAdmin=admin;
+  const prefs=admin?{background:true,pet:true,sound:true}:getAppearancePreferences();
+  theme={...theme,assets:{...theme.assets}};
+  if(!prefs.background)for(const slot of ['desktop','tablet','mobile'])delete theme.assets[slot];
+  if(!prefs.pet)theme.petEnabled=false;
+  let disposePet=()=>{};
   const style = document.createElement('style'); style.id = 'site-appearance';
   const color = admin ? theme.adminColor : theme.userColor;
   let css = '';
@@ -47,8 +56,8 @@ export function applyAppearance(theme, admin = false) {
   if (theme.petEnabled && theme.assets?.pet && (!admin || theme.petOnAdmin)) {
     pet = document.createElement('img'); pet.className = 'site-pet'; pet.alt = ''; pet.setAttribute('aria-hidden', 'true');
     pet.style.setProperty('--pet-size', Math.max(48, Math.min(240, theme.petSize || 120)) + 'px');
-    document.body.append(pet); update();
+    document.body.append(pet); update();disposePet=attachPet(pet,theme.assets.sound?API_BASE+theme.assets.sound:null,prefs.sound);
     document.addEventListener('visibilitychange', update); reduced.addEventListener('change', update);
   }
-  dispose = () => { if(favicon && oldIcon!=null)favicon.setAttribute('href',oldIcon); style.remove(); if (pet) { pet.removeAttribute('src'); pet.remove(); } document.removeEventListener('visibilitychange', update); reduced.removeEventListener('change', update); };
+  dispose = () => { disposePet();if(favicon && oldIcon!=null)favicon.setAttribute('href',oldIcon); style.remove(); if (pet) { pet.removeAttribute('src'); pet.remove(); } document.removeEventListener('visibilitychange', update); reduced.removeEventListener('change', update); };
 }

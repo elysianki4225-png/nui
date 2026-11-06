@@ -438,3 +438,10 @@
 .workspace-heading .muted { font-size:12px; }
 @media(min-width:1024px){.workspace-new {display:flex;align-self:flex-start;margin:8px 0 20px;padding:18px;border-radius:16px;height:56px}.user-app .fab-main{display:none}}
 @media(max-width:599px){.workspace-heading{padding:12px 16px 0}.workspace-heading h1{font-size:22px}}
+
+.site-pet {pointer-events:auto;touch-action:none;cursor:grab;}
+.site-pet:active{cursor:grabbing}
+.site-pet:focus-visible{outline:2px solid var(--md-primary);border-radius:12px}
+.create-actions{display:grid;gap:12px}.create-actions .btn{justify-content:flex-start;min-height:56px;font-size:16px}
+.admin-page audio { display:block; width:100%; max-width:100%; margin-top:12px; }
+.admin-page input[type=file] { max-width:100%; min-width:0; }

@@ -1,3 +1,4 @@
+import {renderPetSound} from './pet-sound.js';
 import { h, clear, icon, uploadWithProgress, GET, POST, PATCH, PUT, DEL, toast, confirmDialog, formatBytes } from '/assets/js/core.js';
 import { applyAppearance } from '/assets/js/appearance.js';
 
@@ -38,14 +39,14 @@ export function renderStorage(page) {
 export function renderAppearance(page) {
   let alive = true, uploadAbort=null, cancelWork = () => {}, previewURL = '', processed = null, theme, busy = false, generation = 0;
   const disposeURL = () => { if (previewURL) URL.revokeObjectURL(previewURL); previewURL = ''; };
-  const heading = h('h2', {}, '主题'); const body = h('div', { class: 'theme-editor' }); page.append(heading, body);
+  const heading = h('h2', {}, '主题'); const body = h('div', { class: 'theme-editor' }); page.append(heading, body);const disposeSound=renderPetSound(page);
   const check = (label, input) => h('label', { class: 'row gap-8 wrap' }, input, h('span', {}, label));
   async function init() {
     const r = await GET('/api/admin/appearance'); if (!alive) return; theme = r.appearance;
     const gallery = h('div', { class: 'theme-current' });
     const drawGallery = () => {
       clear(gallery);
-      for (const [key, src] of Object.entries(theme.assets)) gallery.append(h('figure', {}, h('figcaption', {}, ({ logo: '备忘录 Logo', pet: '桌宠', mobile: '手机背景', tablet: '平板背景', desktop: '电脑背景' })[key]), h('img', { class: 'theme-preview', src, alt: key, loading: 'lazy' })));
+      for (const [key, src] of Object.entries(theme.assets).filter(([key])=>key!=='sound')) gallery.append(h('figure', {}, h('figcaption', {}, ({ logo: '备忘录 Logo', pet: '桌宠', mobile: '手机背景', tablet: '平板背景', desktop: '电脑背景' })[key]), h('img', { class: 'theme-preview', src, alt: key, loading: 'lazy' })));
     };
     drawGallery();
     const userColor = h('input', { type: 'color', value: theme.userColor || '#6750a4', 'aria-label': '用户界面主色' });
@@ -62,7 +63,7 @@ export function renderAppearance(page) {
     body.append(h('div', { class: 'panel theme-options' }, h('h3', {}, '配色与桌宠'),
       check('用户界面主色', userColor), check('管理员界面主色', adminColor), check('开启桌宠', enabled), check('管理端也显示桌宠', onAdmin),
       check('桌宠尺寸', size), sizeText,
-      h('p', { class: 'muted md-body-s' }, '桌宠仅作装饰，不拦截点击。自动适配屏幕、安全区和横屏；页面隐藏或系统减少动画时停止显示。关闭后仍保留素材，需删除素材请使用下方按钮。'),
+      h('p', { class: 'muted md-body-s' }, '桌宠支持鼠标和触屏拖动；点击播放或停止已上传的音频。自动适配屏幕、安全区和横屏；页面隐藏或系统减少动画时停止显示。关闭后仍保留素材，需删除素材请使用下方按钮。'),
       h('div', { class: 'row wrap gap-8' }, save, h('button', { class: 'btn btn-outlined', onClick: async () => {
         try { const result = await PATCH('/api/admin/appearance', { userColor: '', adminColor: '' }); theme = result.appearance; userColor.value = adminColor.value = '#6750a4'; applyAppearance(theme, true); toast('已恢复默认配色'); } catch (e) { toast(e.message, { type: 'error' }); }
       } }, '恢复默认配色'))));
@@ -121,5 +122,5 @@ export function renderAppearance(page) {
       gallery));
   }
   init().catch(e => { if (alive) body.append(h('p', {}, e.message)); });
-  return () => { alive = false;uploadAbort?.abort(); cancelWork(); disposeURL(); processed = null; };
+  return () => { disposeSound();alive = false;uploadAbort?.abort(); cancelWork(); disposeURL(); processed = null; };
 }

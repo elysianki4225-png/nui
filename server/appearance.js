@@ -1,13 +1,17 @@
 import crypto from 'node:crypto';
 import { HttpError, readJson, readBody } from './util.js';
 
-const SLOTS = new Set(['logo', 'pet', 'mobile', 'tablet', 'desktop']);
+const SLOTS = new Set(['sound', 'logo', 'pet', 'mobile', 'tablet', 'desktop']);
 export function publicAppearance(settings) {
   const theme = settings.appearance || {};
   const assets = settings.themeAssets || {};
   return { userColor: theme.userColor || '', adminColor: theme.adminColor || '', petEnabled: !!theme.petEnabled,
     petSize: theme.petSize || 120, petOnAdmin: theme.petOnAdmin !== false,
     assets: Object.fromEntries(Object.entries(assets).filter(([slot, ref]) => SLOTS.has(slot) && ref).map(([slot, ref]) => [slot, `/api/theme-assets/${slot}?v=${ref.version}`])) };
+}
+export function soundMime(bytes){
+ if(bytes.length<46||bytes.toString('ascii',0,4)!=='RIFF'||bytes.toString('ascii',8,12)!=='WAVE'||bytes.toString('ascii',12,16)!=='fmt '||bytes.readUInt32LE(16)!==16||bytes.readUInt16LE(20)!==1||bytes.readUInt16LE(22)!==1||bytes.readUInt32LE(24)!==16000||bytes.readUInt32LE(28)!==32000||bytes.readUInt16LE(32)!==2||bytes.readUInt16LE(34)!==16||bytes.toString('ascii',36,40)!=='data'||bytes.readUInt32LE(4)!==bytes.length-8||bytes.readUInt32LE(40)!==bytes.length-44||(bytes.length-44)%2||bytes.length>1920044)throw new HttpError(400,'请先在浏览器压缩为最长 60 秒的桌宠音频','BAD_AUDIO');
+ return 'audio/wav';
 }
 function mimeOf(bytes) {
   if (bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) return 'image/jpeg';
@@ -39,8 +43,8 @@ export function registerAppearanceRoutes({ route, requireAdmin }, { store, pool 
     if (uploading) throw new HttpError(409, '请等待当前素材上传完成', 'BUSY');
     uploading = true;
     try {
-      const bytes = await readBody(req, slot === 'pet' ? 2 * 1024 * 1024 : 1536 * 1024);
-      const mime = mimeOf(bytes);
+      const bytes = await readBody(req, ['pet','sound'].includes(slot) ? 2 * 1024 * 1024 : 1536 * 1024);
+      const mime = slot==='sound'?soundMime(bytes):mimeOf(bytes);
       const key = crypto.randomBytes(32), iv = crypto.randomBytes(12), cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
       const encrypted = Buffer.concat([cipher.update(bytes), cipher.final(), cipher.getAuthTag()]);
       const uploaded = await pool.upload(encrypted, { filename: `theme-${slot}.bin` });

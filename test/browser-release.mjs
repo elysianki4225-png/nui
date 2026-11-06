@@ -1,3 +1,4 @@
+import {checkPetFeatures} from './pet-features.mjs';
 import {checkDragPreview} from './drag-preview.mjs';
 // Optional isolated real-browser audit. Set NUI_BROWSER_DEPS to npm prefix containing
 // playwright-core and @sparticuz/chromium. No production data or external services used.
@@ -128,8 +129,8 @@ try {
  assert.equal(await admin.getByLabel('证书 PEM（certificate）',{exact:true}).inputValue(),'draft-admin-cert');
  for(const [width,height] of [[360,780],[768,1024],[1440,900],[780,360]]) {await admin.setViewportSize({width,height});assert(await admin.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
  await admin.setViewportSize({width:1440,height:900});
- await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.locator('input[type=file]').waitFor();await admin.getByLabel('素材用途').selectOption('pet');
- await admin.locator('input[type=file]').setInputFiles({name:'pet.gif',mimeType:'image/gif',buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')});
+ await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.getByLabel('选择素材',{exact:true}).waitFor();await admin.getByLabel('素材用途').selectOption('pet');
+ await admin.getByLabel('选择素材',{exact:true}).setInputFiles({name:'pet.gif',mimeType:'image/gif',buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')});
  await admin.getByRole('button',{name:'本机压缩 / 抠图并预览'}).click();
  await admin.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='确认预览并上传').disabled);
  await admin.getByRole('button',{name:'确认预览并上传'}).click();await admin.getByText('素材已上传。桌宠需开启上方开关；背景按设备自动显示。').waitFor();
@@ -301,6 +302,7 @@ try {
  await admin.getByLabel('未登录时显示计算器').uncheck();await admin.getByLabel('伪装设置认证密码').fill('isolated-test-password');
  const disable=admin.waitForResponse(r=>r.url().endsWith('/api/admin/disguise')&&r.request().method()==='PATCH');await admin.getByRole('button',{name:'保存伪装设置',exact:true}).click();assert.equal((await disable).status(),200);await calc.goto('about:blank');
  console.log('PASS maintenance responsive settings and calculator real arithmetic/secret unlock/backend enforcement/still-requires-login');
+ await checkPetFeatures(admin,user,base);
  await checkDragPreview(user);
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}

@@ -1,7 +1,7 @@
 import {startEntryGate} from '/assets/js/entry-gate.js';
 import { requestCaptcha } from '/assets/js/captcha.js';
 import { Organization, installOrganizationDrag } from '/assets/js/organization.js';
-import { loadAppearance } from '/assets/js/appearance.js';
+import { loadAppearance,getAppearancePreferences,setAppearancePreference } from '/assets/js/appearance.js';
 import {
   API_BASE, closeOverlays, registerOverlay, h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PUT, PATCH, DEL, ApiError,
@@ -282,7 +282,7 @@ function renderMain() {
   const shell = h('div', { class: 'shell shell-user' });
   const rail = h('nav', { class: 'nav-rail' });
   rail.append(h('div', { class:'site-logo', style: { marginBottom: '8px', color: 'var(--md-primary)' } }, icon('sticky_note_2', 'lg')));
-  rail.append(h('button',{class:'btn btn-tonal workspace-new',onClick:()=>{switchTab('memos');openEditor();}},icon('add'),'新建'));
+  rail.append(h('button',{class:'btn btn-tonal workspace-new',onClick:()=>{switchTab('memos');openCreateMenu();}},icon('add'),'新建'));
   for (const n of NAV) {
     rail.append(h('button', { class: `nav-rail-item stateful ${S.tab === n.id ? 'active' : ''}`, onClick: () => switchTab(n.id) },
       h('span', { class: 'nav-indicator' }, icon(n.icon)), h('span', {}, n.label)));
@@ -296,7 +296,7 @@ function renderMain() {
   );
   const content = h('div', { class: 'content' });
   main.append(topbar, content);
-  const fab = h('button', { class: 'fab fab-main extended stateful', title: '新建备忘录', onClick: () => openEditor() }, icon('add'), h('span', {}, '新建'));
+  const fab = h('button', { class: 'fab fab-main extended stateful', title: '新建备忘录', onClick: () => openCreateMenu() }, icon('add'), h('span', {}, '新建'));
   shell.append(rail, main, fab);
   $app.append(shell);
 
@@ -834,18 +834,23 @@ function openLightbox(url, title) {
 }
 
 // ============================ 编辑器 ============================
-function openEditor() {
+function openCreateMenu(){
+ const content=h('div',{class:'create-actions'});let dlg;
+ for(const [label,ic,fn] of [['创建文件夹','folder',()=>{if(!S.organization?.ready)return toast('文件夹尚未加载，请稍候');editFolder();}],['上传文件','upload',()=>openEditor('files')],['新建文字','edit',()=>openEditor('text')]])content.append(h('button',{class:'btn btn-text',onClick:()=>{dlg.close(true);fn();}},icon(ic),label));
+ dlg=openDialog({title:'新建',content,actions:[{label:'取消'}]});
+}
+function openEditor(initialMode='text') {
   if (S.config && !S.config.storageReady) { toast('管理员尚未配置存储机器人，无法保存', { type: 'error' }); return; }
-  let mode = 'text';
+  let mode = 'text',disposeEditor=()=>{};
   const tabs = h('div', { class: 'auth-tabs', style: { marginBottom: '20px' } });
   const body = h('div');
-  const dlg = openDialog({ title: '新建备忘录', titleIcon: 'note_add', wide: true, fullMobile: true, content: h('div', {}, tabs, body), dismissable: true });
+  const dlg = openDialog({ title: '新建备忘录', titleIcon: 'note_add', wide: true, fullMobile: true, content: h('div', {}, tabs, body),onClose:()=>disposeEditor(), dismissable: true });
   function setMode(m) { mode = m; clear(tabs); tabs.append(
     h('button', { class: m === 'text' ? 'active' : '', onClick: () => setMode('text') }, '文字'),
     h('button', { class: m === 'files' ? 'active' : '', onClick: () => setMode('files') }, '图片 / 视频 / 文件'));
     buildMode(); }
-  function buildMode() { clear(body); if (mode === 'text') buildTextEditor(body, dlg); else buildFileEditor(body, dlg); }
-  setMode('text');
+  function buildMode() { disposeEditor();disposeEditor=()=>{};clear(body); if (mode === 'text') buildTextEditor(body, dlg); else disposeEditor=buildFileEditor(body, dlg); }
+  setMode(initialMode);if(initialMode==='files')body.querySelector('input[type=file]')?.click();
 }
 
 function buildTextEditor(body, dlg) {
@@ -891,8 +896,7 @@ function buildFileEditor(body, dlg) {
   input.addEventListener('change', () => { addFiles(input.files); input.value = ''; });
   const onPaste = (e) => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); addFiles(files); } };
   document.addEventListener('paste', onPaste);
-  const origClose = dlg.close;
-  dlg.close = () => { document.removeEventListener('paste', onPaste); origClose(); };
+
 
   function addFiles(files) {
     for (const f of files) {
@@ -942,6 +946,7 @@ function buildFileEditor(body, dlg) {
     if (queue.every((i) => i.status === 'done')) dlg.close();
     else save.disabled = false;
   }
+  return ()=>document.removeEventListener('paste',onPaste);
 }
 
 async function uploadBlob({ type, bytes, mime, metaObj, thumbBlob, onProgress }) {
@@ -1072,6 +1077,8 @@ function renderSettings() {
   c.classList.add('view-enter');
   const scroll = h('div', { class: 'settings-scroll' });
   const stats = S.stats || { count: 0, bytes: 0, images: 0, videos: 0, texts: 0, files: 0 };
+  const prefs=getAppearancePreferences();
+  scroll.append(h('section',{class:'settings-group'},h('h3',{},'管理员外观推送'),h('p',{class:'muted'},'仅保存于当前浏览器；声音默认关闭，开启后点击桌宠播放或停止。'),... [['background','显示管理员背景'],['pet','显示管理员桌宠'],['sound','桌宠声音']].map(([key,label])=>h('label',{class:'settings-row'},h('span',{class:'flex-1'},label),h('input',{type:'checkbox',checked:prefs[key],onChange:e=>{try{setAppearancePreference(key,e.target.checked);}catch{e.target.checked=!e.target.checked;toast('浏览器不允许保存设置');}}})))));
   // 账号
   const g1 = h('div', { class: 'settings-group' }, h('h3', {}, '账号'),
     h('div', { class: 'settings-card' },
