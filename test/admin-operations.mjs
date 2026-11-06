@@ -132,6 +132,7 @@ try {
     if (bin === "/usr/bin/bash" && args.includes("--update")) {
       fs.writeFileSync(path.join(app, "server/index.js"), "new-code");
       fs.writeFileSync(path.join(dir, "snapshot.json"), "new-metadata");
+      fs.writeFileSync(path.join(dir,"events.jsonl"),"new-events");
       if (failInstall) throw Error("INJECTED_INSTALL_FAILURE");
     }
     return "";
@@ -177,6 +178,7 @@ try {
     fs.readFileSync(path.join(dir, "snapshot.json"), "utf8"),
     "old-metadata",
   );
+  assert(!fs.existsSync(path.join(dir,"events.jsonl")),"rollback must remove journals absent before update");
   failInstall = false;
   healthy = false;
   assert.equal((await run("update")).status, "failed");

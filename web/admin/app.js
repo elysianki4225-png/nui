@@ -15,10 +15,12 @@ document.body.classList.add('admin-app');
 const $app = document.getElementById('app');
 const S = { view: 'loading', page: 'overview', status: null, username: null, el: {}, data: {} };
 
+let bootGeneration=0;
 initTheme();initRipple();
 boot();
 async function boot() {
-  try { S.status = await GET('/api/admin/status'); } catch (e) { toast('无法连接服务器: ' + e.message, { type: 'error' }); }
+  const generation=++bootGeneration;
+  try { const status=await GET('/api/admin/status');if(generation!==bootGeneration)return;S.status=status; } catch (e) { if(generation!==bootGeneration)return; S.status=null;S.el.page?._disposeAcceleration?.();S.pageCleanup?.();S.pageCleanup=null;applyAppearance({},true);clear($app);$app.append(h('main',{class:'auth-wrap'},h('div',{class:'auth-card'},h('p',{role:'status'},'无法连接服务器，请重试。'),h('button',{class:'btn btn-filled',onClick:()=>boot()},'重试'))));return; }
   if(S.status?.disguised){S.el.page?._disposeAcceleration?.();S.pageCleanup?.();S.pageCleanup=null;applyAppearance({},true);renderCalculator($app,()=>boot());return;}
   document.title='备忘录管理';loadSprite();loadAppearance(true);
   if (S.status?.setupRequired) setView('setup');

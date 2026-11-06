@@ -54,9 +54,22 @@ export class Maintenance {
     if (!job) return null;
     let result = null;
     try {
-      const st = fs.lstatSync(this.result);
-      if (st.isFile() && st.size <= 8192)
-        result = JSON.parse(fs.readFileSync(this.result));
+      const fd = fs.openSync(
+        this.result,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NOFOLLOW |
+          fs.constants.O_NONBLOCK,
+      );
+      try {
+        const st = fs.fstatSync(fd);
+        if (st.isFile() && st.size <= 8192) {
+          const b = Buffer.alloc(8193),
+            n = fs.readSync(fd, b, 0, b.length, 0);
+          if (n <= 8192) result = JSON.parse(b.subarray(0, n));
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch {}
     if (
       result?.id === job.id &&
@@ -93,7 +106,13 @@ export class Maintenance {
     const pkg = JSON.parse(
       Buffer.from(file.content || "", "base64").toString(),
     );
-    if (!/^\d+\.\d+\.\d+$/.test(pkg.version))
+    if (
+      typeof pkg.version !== "string" ||
+      pkg.version.length > 64 ||
+      !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.test(
+        pkg.version,
+      )
+    )
       throw new HttpError(503, "远端版本号无效");
     this.latest = {
       sha: commit.sha,

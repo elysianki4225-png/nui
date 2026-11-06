@@ -303,6 +303,10 @@ try {
  const disable=admin.waitForResponse(r=>r.url().endsWith('/api/admin/disguise')&&r.request().method()==='PATCH');await admin.getByRole('button',{name:'保存伪装设置',exact:true}).click();assert.equal((await disable).status(),200);await calc.goto('about:blank');
  console.log('PASS maintenance responsive settings and calculator real arithmetic/secret unlock/backend enforcement/still-requires-login');
  await checkPetFeatures(admin,user,base);
+ const offlineAdmin=await browser.newPage();offlineAdmin.on('pageerror',e=>errors.push(e.message));
+ await offlineAdmin.route('**/api/admin/status',route=>route.abort());await offlineAdmin.goto(base+'/admin/');await offlineAdmin.getByRole('button',{name:'重试',exact:true}).waitFor();
+ assert.equal(await offlineAdmin.locator('input[type=password],.shell-admin').count(),0,'unknown admin state must not render login or admin shell');await offlineAdmin.unroute('**/api/admin/status');await offlineAdmin.getByRole('button',{name:'重试',exact:true}).click();await offlineAdmin.locator('.shell-admin').waitFor();await offlineAdmin.goto('about:blank');
+ console.log('PASS admin status failure stays closed and retry recovers');
  await checkDragPreview(user);
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}

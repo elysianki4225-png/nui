@@ -1,7 +1,7 @@
 import {attachPet} from './pet.js';
 import { API_BASE, GET } from './core.js';
 
-let dispose = () => {},lastTheme=null,lastAdmin=false;
+let dispose = () => {},lastTheme=null,lastAdmin=false,appearanceGeneration=0;
 export function getAppearancePreferences(){let saved={};try{saved=JSON.parse(localStorage.getItem('memo-appearance-preferences'))||{};}catch{}return {background:saved.background!==false,pet:saved.pet!==false,sound:saved.sound===true};}
 export function setAppearancePreference(key,value){if(!['background','pet','sound'].includes(key))return;const prefs=getAppearancePreferences();prefs[key]=!!value;localStorage.setItem('memo-appearance-preferences',JSON.stringify(prefs));if(lastTheme&&!lastAdmin)applyAppearance(lastTheme,false);}
 
@@ -15,10 +15,11 @@ function contrast(hex) {
   return linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722 > .179 ? '#000000' : '#ffffff';
 }
 export async function loadAppearance(admin = false) {
-  try { const r = await GET('/api/appearance'); applyAppearance(r.appearance, admin); } catch { /* existing theme is safe if offline */ }
+  const generation=++appearanceGeneration;
+  try { const r = await GET('/api/appearance'); if(generation===appearanceGeneration)applyAppearance(r.appearance, admin); } catch { /* existing theme is safe if offline */ }
 }
 export function applyAppearance(theme, admin = false) {
-  dispose();lastTheme=theme;lastAdmin=admin;
+  appearanceGeneration++;dispose();lastTheme=theme;lastAdmin=admin;
   const prefs=admin?{background:true,pet:true,sound:true}:getAppearancePreferences();
   theme={...theme,assets:{...theme.assets}};
   if(!prefs.background)for(const slot of ['desktop','tablet','mobile'])delete theme.assets[slot];

@@ -7,6 +7,84 @@ import { fileURLToPath } from "node:url";
 const APP = "/opt/nui-memo",
   CONF = "/etc/nui-memo/config.json",
   REPO = "elysianki4225-png/nui";
+// Only stable releases and numbered beta builds are supported by this release channel.
+export function compareVersions(a, b) {
+  const parse = (v) => {
+    if (
+      typeof v !== "string" ||
+      v.length > 64 ||
+      !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/.test(
+        v,
+      )
+    )
+      throw Error("BAD_VERSION");
+    const [core, pre] = v.split("-");
+    return [...core.split(".").map(BigInt), pre ? BigInt(pre.slice(5)) : null];
+  };
+  const x = parse(a),
+    y = parse(b);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
+  if (x[3] === y[3]) return 0;
+  if (x[3] === null) return 1;
+  if (y[3] === null) return -1;
+  return x[3] > y[3] ? 1 : -1;
+}
+// Never follow app-controlled metadata symlinks, especially on rollback destinations.
+export function copyRegularAtomic(source, destination, owner) {
+  let input, output, tmp;
+  try {
+    try {
+      input = fs.openSync(
+        source,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NOFOLLOW |
+          fs.constants.O_NONBLOCK,
+      );
+    } catch (e) {
+      if (e.code === "ENOENT") return false;
+      throw e;
+    }
+    const stat = fs.fstatSync(input);
+    if (!stat.isFile() || stat.size > 512 * 1024 * 1024)
+      throw Error("UNSAFE_METADATA");
+    tmp = destination + "." + crypto.randomUUID();
+    output = fs.openSync(
+      tmp,
+      fs.constants.O_WRONLY |
+        fs.constants.O_CREAT |
+        fs.constants.O_EXCL |
+        fs.constants.O_NOFOLLOW,
+      0o600,
+    );
+    const buffer = Buffer.alloc(65536);
+    let at = 0;
+    while (at < stat.size) {
+      const n = fs.readSync(
+        input,
+        buffer,
+        0,
+        Math.min(buffer.length, stat.size - at),
+        at,
+      );
+      if (!n) throw Error("METADATA_CHANGED");
+      let written = 0;
+      while (written < n)
+        written += fs.writeSync(output, buffer, written, n - written);
+      at += n;
+    }
+    if (owner) fs.fchownSync(output, owner.uid, owner.gid);
+    fs.fsyncSync(output);
+    fs.closeSync(output);
+    output = undefined;
+    fs.renameSync(tmp, destination);
+    tmp = undefined;
+    return true;
+  } finally {
+    if (input !== undefined) fs.closeSync(input);
+    if (output !== undefined) fs.closeSync(output);
+    if (tmp) fs.rmSync(tmp, { force: true });
+  }
+}
 export function validateJob(j, now = Date.now()) {
   if (
     !j ||
@@ -118,7 +196,8 @@ export async function runMaintenance({
     });
   let temp,
     backup,
-    stopped = false;
+    stopped = false,
+    metadataComplete = false;
   try {
     report("running", "维护任务正在执行");
     if (job.action === "update") {
@@ -184,13 +263,7 @@ export async function runMaintenance({
       const current = JSON.parse(
         fs.readFileSync(path.join(app, "server/package.json")),
       ).version;
-      if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error("BAD_VERSION");
-      const parts = version.split(".").map(Number),
-        old = current.split(".").map(Number);
-      for (let i = 0; i < 3; i++) {
-        if (parts[i] < old[i]) throw Error("OLDER_VERSION");
-        if (parts[i] > old[i]) break;
-      }
+      if (compareVersions(version, current) < 0) throw Error("OLDER_VERSION");
       for (const file of fs
         .readdirSync(path.join(src, "server"))
         .filter((x) => x.endsWith(".js")))
@@ -213,8 +286,8 @@ export async function runMaintenance({
       stopped = true;
       run("/usr/bin/systemctl", ["stop", "nui-memo"]);
       for (const name of ["snapshot.json", "events.jsonl"])
-        if (fs.existsSync(path.join(dir, name)))
-          fs.copyFileSync(path.join(dir, name), path.join(backup, name));
+        copyRegularAtomic(path.join(dir, name), path.join(backup, name));
+      metadataComplete = true;
       report("running", "安装已确认提交，保留现有数据与域名配置");
       run("/usr/bin/bash", [path.join(src, "install.sh"), "--update", "-y"], {
         env: {
@@ -285,9 +358,17 @@ export async function runMaintenance({
             });
           }
         fs.copyFileSync(path.join(backup, "config.json"), confPath);
-        for (const name of ["snapshot.json", "events.jsonl"])
-          if (fs.existsSync(path.join(backup, name)))
-            fs.copyFileSync(path.join(backup, name), path.join(dir, name));
+        if (metadataComplete)
+          for (const name of ["snapshot.json", "events.jsonl"]) {
+            if (
+              !copyRegularAtomic(
+                path.join(backup, name),
+                path.join(dir, name),
+                fs.statSync(dir),
+              )
+            )
+              fs.rmSync(path.join(dir, name), { force: true });
+          }
         run("/usr/bin/systemctl", ["start", "nui-memo"]);
       } catch {
         report(

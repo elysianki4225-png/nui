@@ -1,6 +1,6 @@
 {
   "name": "nui-memo",
-  "version": "3.3.0",
+  "version": "3.5.0-beta.1",
   "private": true,
   "type": "module",
   "description": "端到端加密备忘录（开发期构建工具，运行时零依赖）",
