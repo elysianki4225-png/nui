@@ -139,15 +139,25 @@ try {
  }
  // Exercise each SDK adapter and cancellation locally; external provider code is mocked.
  const challenge=await browser.newPage();challenge.on('pageerror',e=>errors.push(e.message));await challenge.goto(base+'/admin/');
+ // A real Turnstile explicit SDK rejects ready(); an always-successful mock hid this bug.
+ await challenge.route('https://www.google.com/recaptcha/api.js*',r=>r.fulfill({contentType:'application/javascript',body:"window.grecaptcha={ready(){throw new Error('SDK initialization failed');}};"}));
+ const initFailure=await challenge.evaluate(async()=>{const {requestCaptcha}=await import('/assets/js/captcha.js');try{await requestCaptcha({enabled:true,provider:'recaptcha',siteKey:'test'});}catch(e){return e.code;}});
+ assert.equal(initFailure,'CAPTCHA_SDK_INIT');await challenge.waitForFunction(()=>!document.querySelector('.dialog-scrim'));
+ await challenge.unroute('https://www.google.com/recaptcha/api.js*');
+ await challenge.route('https://js.hcaptcha.com/1/api.js*',r=>r.abort());
+ const networkFailure=await challenge.evaluate(async()=>{const {requestCaptcha}=await import('/assets/js/captcha.js');try{await requestCaptcha({enabled:true,provider:'hcaptcha',siteKey:'test'});}catch(e){return e.code;}});
+ assert.equal(networkFailure,'CAPTCHA_SDK_NETWORK');await challenge.waitForFunction(()=>!document.querySelector('.dialog-scrim'));
+ await challenge.unroute('https://js.hcaptcha.com/1/api.js*');
+
  for(const [provider,global,url] of [['turnstile','turnstile','https://challenges.cloudflare.com/turnstile/v0/api.js*'],['recaptcha','grecaptcha','https://www.google.com/recaptcha/api.js*'],['hcaptcha','hcaptcha','https://js.hcaptcha.com/1/api.js*']]){
-  await challenge.route(url,r=>r.fulfill({contentType:'application/javascript',body:`window.${global}={ready:cb=>cb(),render:(el,o)=>{setTimeout(()=>o.callback('verified-${provider}'),20);return 1;},remove:()=>{},reset:()=>{}};`}));
+  await challenge.route(url,r=>r.fulfill({contentType:'application/javascript',body:`window.${global}={ready:cb=>{if('${provider}'==='turnstile')throw new Error('ready is unsupported in explicit mode');setTimeout(cb,20);},render:(el,o)=>{setTimeout(()=>o.callback('verified-${provider}'),20);return 1;},remove:()=>{},reset:()=>{}};`}));
   const token=await challenge.evaluate(async provider=>{const {requestCaptcha}=await import('/assets/js/captcha.js');return requestCaptcha({enabled:true,provider,siteKey:'test-site'});},provider);
   assert.equal(token,'verified-'+provider);await challenge.waitForFunction(()=>!document.querySelector('.dialog-scrim'));
  }
  await challenge.evaluate(async()=>{window.turnstile.render=(el,o)=>{window.lateCaptcha=o.callback;return 2;};const {requestCaptcha}=await import('/assets/js/captcha.js');window.pendingCaptcha=requestCaptcha({enabled:true,provider:'turnstile',siteKey:'test'}).then(()=> 'accepted',()=> 'cancelled');});
  await challenge.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await challenge.evaluate(()=>window.pendingCaptcha),'cancelled');
  await challenge.evaluate(()=>window.lateCaptcha?.('late-token'));assert.equal(await challenge.evaluate(()=>window.pendingCaptcha),'cancelled');
- await challenge.goto('about:blank');console.log('PASS CAPTCHA widget adapters under CSP, modal cleanup and late-callback cancellation (mock SDKs)');
+ await challenge.goto('about:blank');console.log('PASS CAPTCHA explicit-mode Turnstile (ready rejects), initialization/network failure and retry, three adapters under CSP, modal cleanup and late-callback cancellation (mock SDKs)');
  const user=await browser.newPage();user.on('pageerror',e=>errors.push(e.message));await user.goto(base+'/');
  await user.evaluate(async()=>{
   const enc=new TextEncoder(), raw=new Uint8Array(32), key=await crypto.subtle.importKey('raw',raw,'HKDF',false,['deriveBits','deriveKey']);

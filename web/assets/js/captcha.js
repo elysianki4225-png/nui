@@ -4,9 +4,32 @@ const loads=new Map();
 function load(provider){
   if(loads.has(provider))return loads.get(provider);
   const p=Object.hasOwn(providers,provider)?providers[provider]:null;if(!p)return Promise.reject(new Error('不支持的验证服务'));
-  const promise=new Promise((resolve,reject)=>{let done=false;const script=document.createElement('script');script.src=p.url;script.async=true;let timer=setTimeout(()=>finish(new Error('验证组件加载超时，请检查网络')),15000);
-    function finish(error){if(done)return;done=true;clearTimeout(timer);script.onload=script.onerror=null;if(error){script.remove();loads.delete(provider);reject(error);}else resolve(window[p.global]);}
-    script.onerror=()=>finish(new Error('无法加载验证组件，请检查网络'));script.onload=()=>{const api=window[p.global];if(api?.ready)api.ready(()=>finish());else if(api?.render)finish();else finish(new Error('验证组件未就绪'));};document.head.append(script);
+  const promise=new Promise((resolve,reject)=>{
+    let done=false;
+    const script=document.createElement('script');script.src=p.url;script.async=true;
+    const error=(code,message)=>Object.assign(new Error(message),{code});
+    const timer=setTimeout(()=>finish(error('CAPTCHA_SDK_TIMEOUT','浏览器加载验证组件超时，请检查浏览器网络或拦截设置（尚未进行服务器校验）')),15000);
+    function finish(err){
+      if(done)return;
+      done=true;clearTimeout(timer);script.onload=script.onerror=null;
+      if(err){script.remove();loads.delete(provider);reject(err);}else resolve(window[p.global]);
+    }
+    const ready=()=>{
+      if(typeof window[p.global]?.render!=='function')return finish(error('CAPTCHA_SDK_INVALID','验证组件未正确初始化，请刷新页面后重试'));
+      finish();
+    };
+    script.onerror=()=>finish(error('CAPTCHA_SDK_NETWORK','浏览器无法加载验证组件，请检查网络或内容拦截设置'));
+    script.onload=()=>{
+      try {
+        const api=window[p.global];
+        // Turnstile explicit rendering does not support turnstile.ready().
+        // The script load event provides the exported render API; only Google's
+        // SDK needs its ready callback to wait for the secondary library.
+        if(provider==='recaptcha' && typeof api?.ready==='function')api.ready(ready);
+        else ready();
+      }catch{finish(error('CAPTCHA_SDK_INIT','验证组件初始化失败，请刷新页面后重试（不是服务器校验失败）'));}
+    };
+    document.head.append(script);
   });loads.set(provider,promise);return promise;
 }
 export async function requestCaptcha(candidate){
