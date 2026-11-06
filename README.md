@@ -484,3 +484,7 @@ sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
 ### 文件夹、排序、风控与 Logo
 
 用户可建立加密文件夹、移动备忘录，并在 PC/手机长按拖动柄排序。管理员可选择开启保守风控及临时 IP 自动封锁，在主题中上传 Logo（跟随全站本地/TG 存储）。详见 [功能与安全边界](docs/ORGANIZATION-RISK-LOGO.md)。
+
+### NAT 部署与人机验证
+
+支持 NAT 公网/内部端口分离、带端口 HTTPS 直连或 CF 代理回源。风控页可选启用 Turnstile、Google reCAPTCHA v2、hCaptcha，保护注册及两端登录，默认关闭，含配置试验与 SSH 恢复。详见 [部署配置与安全边界](docs/NAT-CAPTCHA.md)。

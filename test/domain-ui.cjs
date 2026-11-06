@@ -33,10 +33,17 @@ assert.equal(byLabel('证书 PEM（certificate）').querySelector('textarea').va
 assert.equal(byLabel('Cloudflare API Token（可选，自动签发）').querySelector('input').value,'');
 click('管理界面');assert.equal(byLabel('回源 HTTPS 端口').querySelector('input').value,'8443');
 assert.equal(byLabel('Cloudflare API Token（可选，自动签发）').querySelector('input').value,'ADMIN-TOKEN');
+const natToggle=[...document.querySelectorAll('label')].find(l=>l.textContent==='此入口通过 NAT 端口映射访问').querySelector('input');
+natToggle.checked=true;natToggle.dispatchEvent(new dom.window.Event('change'));
+edit('公网 HTTPS 端口','18443');edit('服务商提供的入口公网 IP','2001:db8::1');
+assert(document.querySelector('.domain-dns-help').textContent.includes('2001:db8::1'));
+click('用户界面');assert(!byLabel('公网 HTTPS 端口'));click('管理界面');
+assert.equal(byLabel('公网 HTTPS 端口').querySelector('input').value,'18443');
 let payload;ctx.POST=async(url,body)=>{payload=JSON.parse(JSON.stringify(body));return {caddyfile:'preview',warnings:[]};};ctx.openDialog=()=>{};
 click('预览 Caddyfile');await new Promise(r=>setTimeout(r,0));
 assert.equal(payload.userHost,'new.example.com');assert.equal(payload.adminHost,'admin.example.net');
 assert.equal(payload.cfHttpsPort,443);assert.equal(payload.adminOrigin.cfHttpsPort,8443);
+assert.equal(payload.adminOrigin.nat.publicHttpsPort,18443);assert(!payload.nat?.enabled);
 assert.equal(payload.adminCfApiToken,'ADMIN-TOKEN');assert.equal(payload.certPem,'CERT');assert.equal(payload.adminCertPem,'ADMIN-CERT');
 const independence=()=>[...document.querySelectorAll('label')].find(l=>l.textContent==='管理端使用独立配置').querySelector('input');
 for(const checked of [false,true]) {const el=independence();el.checked=checked;el.dispatchEvent(new dom.window.Event('change'));}

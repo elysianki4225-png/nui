@@ -62,5 +62,17 @@ assert "caddy no auto_https off" "! grep -q 'auto_https off' '$CADDY_FILE'"
 assert "caddy site direct.example.com" "grep -q 'direct.example.com {' '$CADDY_FILE'"
 assert "caddy HSTS present" "grep -q 'Strict-Transport-Security' '$CADDY_FILE'"
 
+echo "[5] NAT 直连证书、公网端口与内部监听"
+NAT=1;NAT_PUBLIC_IP=203.0.113.8;NAT_PUBLIC_HTTP_PORT=10080;NAT_PUBLIC_HTTPS_PORT=10443
+CLOUDFLARE=0;MODE=domain;USER_HOST=nat.example.com;ADMIN_HOST='';CF_HTTP_PORT=8080;CF_HTTPS_PORT=8443
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$CF_KEY_FILE" -out "$CF_CERT_FILE" -days 1 -subj '/CN=nat.example.com' -addext 'subjectAltName=DNS:nat.example.com' >/dev/null 2>&1
+write_config >/dev/null
+setup_cloudflare_cert >/dev/null
+write_caddyfile >/dev/null
+assert 'NAT public config retained' "grep -q '10443' '$CONF_FILE'"
+assert 'NAT internal HTTPS listener' "grep -q 'https://nat.example.com:8443' '$CADDY_FILE'"
+assert 'NAT redirect uses external port' "grep -q 'redir https://nat.example.com:10443' '$CADDY_FILE'"
+assert 'NAT summary uses external port' "print_summary | grep -q 'https://nat.example.com:10443'"
+
 echo
 if [[ $fail -eq 0 ]]; then echo "install-cf: 全部通过"; else echo "install-cf: 有失败"; exit 1; fi

@@ -1,3 +1,4 @@
+import { requestCaptcha } from '/assets/js/captcha.js';
 import { renderRisk } from './risk.js';
 import { renderAcceleration } from './acceleration.js';
 import { renderStorage, renderAppearance } from './customize.js';
@@ -81,7 +82,7 @@ function renderLogin() {
     err, btn);
   async function submit() {
     err.textContent = ''; btn.disabled = true;
-    try { const r = await POST('/api/admin/login', { username: user.value.trim(), password: pass.value }); S.username = r.username; setView('main'); }
+    try { const r = await POST('/api/admin/login', { username: user.value.trim(), password: pass.value, captchaToken:await requestCaptcha() }); S.username = r.username; setView('main'); }
     catch (e) { err.textContent = e.message; btn.disabled = false; }
   }
   pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -593,7 +594,7 @@ async function renderDomain(page) {
   const draft = { ...data.settings, adminOrigin:data.settings.adminOrigin ? {...data.settings.adminOrigin} : null, adminCertPem:'',adminKeyPem:'',adminCfApiToken:'', certPem: '', keyPem: '', cfApiToken: '' };
   let endpoint = 'user';
   let diagnosticEpoch = 0;
-  const originKeys = ['cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'];
+  const originKeys = ['nat','cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'];
   const adminView = {};
   for (const key of originKeys) Object.defineProperty(adminView,key,{
     get:()=> (draft.adminOrigin || draft)[key], set:value=>{ draft.adminOrigin[key]=value; }
@@ -666,8 +667,8 @@ async function renderDomain(page) {
 
   // DNS 记录助手：根据本机公网 IP 给出建议记录
   function dnsHelp() {
-    const ip = data.serverIp;
-    if (!ip) return h('p', { class: 'muted md-body-s' }, '未能自动获取本机公网 IP，可在 VPS 上运行 curl ip.sb 查看，并据此添加 DNS 记录。');
+    const ip = f.nat?.enabled ? f.nat.publicIp : data.serverIp;
+    if (!ip) return h('p', { class: 'domain-dns-help muted md-body-s' }, f.nat?.enabled ? '请填写服务商提供的入口公网 IP；NAT 出口 IP 不一定能用于入站映射，不要直接使用自动探测结果。' : '未能自动获取本机公网 IP，请核对服务器公网地址后添加 DNS 记录。');
     const isV6 = ip.includes(':');
     const rows = [
       ['类型', isV6 ? 'AAAA' : 'A'],
@@ -699,8 +700,8 @@ async function renderDomain(page) {
     const badHttp = !http.includes(f.cfHttpPort);
     const badHttps = !https.includes(f.cfHttpsPort);
     return h('div', {},
-      chipRow('Cloudflare 支持的 HTTP 回源端口', http, 'cfHttpPort'),
-      chipRow('Cloudflare 支持的 HTTPS 回源端口', https, 'cfHttpsPort'),
+      chipRow('常见 HTTP 监听端口', http, 'cfHttpPort'),
+      chipRow('常见 HTTPS 监听端口', https, 'cfHttpsPort'),
       (badHttp || badHttps || f.cfHttpPort !== 80 || f.cfHttpsPort !== 443) ? h('div', { class: 'auth-note', style: { marginTop: '4px' } }, icon('warning'),
         h('span', {}, '非标准回源端口需在 CDN 配置回源端口规则；仅在此修改不会自动更改 Cloudflare 的回源目标。')) : null);
   }
@@ -715,7 +716,7 @@ async function renderDomain(page) {
     if(endpoint==='admin') {
       const independent=h('input',{type:'checkbox',checked:!!draft.adminOrigin,onChange:()=>{
         if(!independent.checked) savedAdminOrigin=draft.adminOrigin;
-        draft.adminOrigin=independent.checked ? savedAdminOrigin || Object.fromEntries(originKeys.map(k=>[k,draft[k]])) : null;
+        draft.adminOrigin=independent.checked ? savedAdminOrigin || JSON.parse(JSON.stringify(Object.fromEntries(originKeys.map(k=>[k,draft[k]])))) : null;
         renderForm();
       }});
       formWrap.append(h('label',{class:'row gap-8'},independent,h('span',{},'管理端使用独立配置')));
@@ -727,6 +728,16 @@ async function renderDomain(page) {
       }
     }
     const cdnOn = f.cdn !== 'none';
+    const natOn=!!f.nat?.enabled;
+    const natToggle=h('input',{type:'checkbox',checked:natOn,onChange:()=>{f.nat=natToggle.checked?{enabled:true,publicHttpPort:80,publicHttpsPort:443}:null;renderForm();}});
+    const natPanel=h('div',{class:'panel'},h('h3',{},'NAT / 端口映射'),h('label',{class:'row gap-8'},natToggle,h('span',{},'此入口通过 NAT 端口映射访问')));
+    if(natOn){
+      const publicPort=key=>{const el=h('input',{class:'tf-input',type:'number',min:1,max:65535,value:f.nat[key]});el.oninput=()=>{f.nat={...f.nat,[key]:Number(el.value)};};return el;};
+      const publicIp=h('input',{class:'tf-input',value:f.nat.publicIp||'',onInput:e=>{f.nat={...f.nat,publicIp:e.target.value.trim()};const help=formWrap.querySelector('.domain-dns-help');if(help)help.replaceWith(dnsHelp());}});
+      natPanel.append(field('服务商提供的入口公网 IP',publicIp),h('div',{class:'two-col'},field('公网 HTTP 端口',publicPort('publicHttpPort')),field('公网 HTTPS 端口',publicPort('publicHttpsPort'))),
+        h('div',{class:'two-col'},field('机器内部 HTTP 监听端口',num('cfHttpPort',1,65535)),field('机器内部 HTTPS 监听端口',num('cfHttpsPort',1,65535))),
+        h('p',{class:'auth-note'},'请在服务商配置公网 → 内部 TCP 映射，并放行内部端口。直连网址使用公网 HTTPS 端口，需上传浏览器信任的证书（可用 DNS 验证签发）；不自动申请。套 CF 时访客仍访问普通 HTTPS 域名，但 CF 回源规则应指向这里的公网端口，不是内部端口。后端 8787 不应直接映射到公网。'));
+    }
     // 域名 panel
     const domainPanel = h('div', { class: 'panel' },
       h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '2. 填写访问域名')),
@@ -735,7 +746,7 @@ async function renderDomain(page) {
       h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
         h('button', { class: 'btn btn-outlined btn-sm stateful', onClick: checkDns }, icon('dns'), '检测 DNS 解析'),
         h('button', { class: 'btn btn-tonal btn-sm stateful', onClick: runProbe }, icon('fact_check'), '一键诊断（CDN / 证书 / 回源）')),
-      dnsResult, f.mode === 'domain' ? dnsHelp() : h('p', { class: 'muted' }, '保留自动生成的地址，无需手动添加 DNS 记录。'), diagResult);
+      dnsResult, (f.mode === 'domain' || endpoint === 'admin' || natOn) ? dnsHelp() : h('p', { class: 'muted' }, '保留自动生成的地址，无需手动添加 DNS 记录。'), diagResult);
     // CDN panel
     const cdnPanel = h('div', { class: 'panel' },
       h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, '1. 选择访问方式')),
@@ -754,18 +765,18 @@ async function renderDomain(page) {
         f.cdn === 'cloudflare' ? h('div', { class: 'settings-row', style: { padding: '8px 0' } },
           h('div', { class: 's-content' }, h('div', { class: 's-title' }, '仅允许 Cloudflare IP 回源'), h('div', { class: 's-sub' }, '反向代理仅放行 CF 节点；安装器已设置的 UFW 限制需通过 SSH 调整')),
           (() => { const sw = h('input', { type: 'checkbox', checked: f.cfOnly }); sw.addEventListener('change', () => { f.cfOnly = sw.checked; }); return h('label', { class: 'switch' }, sw, h('span', { class: 'switch-track' }, h('span', { class: 'switch-thumb' }))); })()) : null,
-      ) : h('p', { class: 'muted md-body-m' }, "直连模式由 Caddy 自动申请 Let's Encrypt 证书（需域名解析到本机且开放 80/443）。"));
+      ) : h('p', { class: 'muted md-body-m' }, natOn ? "NAT 直连使用手动证书，请在高级设置上传证书与私钥。" : "直连模式由 Caddy 自动申请 Let's Encrypt 证书（需域名解析到本机且开放 80/443）。"));
     // 证书 panel（仅 CDN）
     let certPanel = null;
-    if (cdnOn) {
+    if (cdnOn || natOn) {
       const certTa = h('textarea', { value: f.certPem, class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
       certTa.addEventListener('input', () => { f.certPem = certTa.value; });
       const keyTa = h('textarea', { value: f.keyPem, class: 'tf-input mono', placeholder: ' ', rows: '3', spellcheck: 'false' });
       keyTa.addEventListener('input', () => { f.keyPem = keyTa.value; });
       certPanel = h('div', { class: 'panel' },
-        h('div', { class: 'panel-head' }, icon('lock'), h('h3', {}, '回源证书（Full / Strict）'),
+        h('div', { class: 'panel-head' }, icon('lock'), h('h3', {}, natOn && !cdnOn ? 'NAT 直连 HTTPS 证书' : '回源证书（Full / Strict）'),
           h('span', { class: `badge ${haveCert() ? 'success' : 'neutral'}` }, haveCert() ? '已安装' : '未安装')),
-        h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, 'Strict 需要受 CDN 信任的回源证书。Cloudflare 可在 SSL/TLS → Origin Server 创建 Origin CA 证书后粘贴到下方；或填写 API Token 自动签发。留空则沿用已安装证书或仅用 Flexible。'),
+        h('p', { class: 'muted md-body-m', style: { marginTop: 0 } }, natOn && !cdnOn ? '请上传浏览器信任、覆盖当前域名的完整证书链与私钥，可通过 DNS 验证签发。不能使用仅受 CF 信任的 Origin CA 证书。留空沿用已安装证书；NAT 直连不自动签发。' : 'Strict 需要受 CDN 信任的回源证书。Cloudflare 可在 SSL/TLS → Origin Server 创建 Origin CA 证书后粘贴到下方；或填写 API Token 自动签发。留空则沿用已安装证书或仅用 Flexible。'),
         field('证书 PEM（certificate）', certTa),
         field('私钥 PEM（private key）', keyTa),
         f.cdn === 'cloudflare' ? h('div', {},
@@ -787,7 +798,7 @@ async function renderDomain(page) {
     advanced.append(actions.firstChild);
     if (cdnOn) cdnPanel.append(h('p', { class: 'auth-note' }, icon('info'), h('span', {},
       f.sslMode === 'flexible' ? '当前为简易连接：无需回源证书。请在 CDN 控制台将 SSL 模式设为 Flexible（源站链路为 HTTP）。需要全程加密时，在高级设置中选 Strict 并配置证书。' : `当前为 ${f.sslMode === 'strict' ? 'Strict' : 'Full'} 加密连接，请确保 CDN 控制台模式一致，并配置回源证书。`)));
-    formWrap.append(domainPanel, cdnPanel, advanced,
+    formWrap.append(domainPanel, cdnPanel, natPanel, advanced,
       h('p', { class: 'muted md-body-s' }, '保存会重载代理；更换域名后需在新地址重新登录。CDN 控制台设置不会自动修改。'), actions);
   }
 
@@ -856,6 +867,8 @@ async function renderDomain(page) {
 
   async function apply() {
     const f = draft;
+    if(f.nat?.enabled && f.cdn==='none' && !data.haveCert && !(f.certPem.trim()&&f.keyPem.trim())){selectEndpoint('user');advancedOpen=true;renderForm();toast('NAT 直连请上传浏览器信任的证书和私钥',{type:'error'});return;}
+    if(f.adminOrigin?.nat?.enabled && f.adminOrigin.cdn==='none' && !data.haveAdminCert && !(f.adminCertPem.trim()&&f.adminKeyPem.trim())){selectEndpoint('admin');advancedOpen=true;renderForm();toast('管理端 NAT 直连需要独立证书和私钥',{type:'error'});return;}
     if (f.adminOrigin) {
       if (!f.adminHost || f.adminHost === f.userHost) { toast('独立回源需要不同的管理域名',{type:'error'}); return; }
       if (!!f.adminCertPem.trim() !== !!f.adminKeyPem.trim()) { toast('管理端证书与私钥必须同时填写',{type:'error'}); return; }

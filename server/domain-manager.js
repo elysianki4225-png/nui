@@ -106,7 +106,8 @@ export class DomainManager {
 
   async check(host) {
     const h = String(host || '').trim().toLowerCase();
-    const serverIp = this.serverIp();
+    const origin=h===this.cfg.adminHost ? (this.cfg.adminOrigin||this.cfg) : this.cfg;
+    const serverIp = origin.nat?.enabled ? origin.nat.publicIp || null : this.serverIp();
     const out = { host: h, addresses: [], cloudflare: false, serverIp, matchesServer: null, error: null };
     try {
       const [v4, v6] = await Promise.allSettled([dns.promises.resolve4(h), dns.promises.resolve6(h)]);
@@ -135,22 +136,27 @@ export class DomainManager {
     out.origin = await this.#probeUrl(`http://127.0.0.1:${this.cfg.port}/api/health`);
     if (!out.origin.ok) out.hints.push('本机后端自检失败：nui-memo 服务可能未运行或端口不符。');
 
+    const origin=host===this.cfg.adminHost ? (this.cfg.adminOrigin||this.cfg) : host===this.cfg.userHost ? this.cfg : {};
+    const directNat=origin.nat?.enabled && origin.cdn==='none';
+    const httpsPort=directNat?origin.nat.publicHttpsPort:443,httpPort=directNat?origin.nat.publicHttpPort:80;
+    if(origin.nat?.enabled)out.hints.push('NAT 请核对服务商公网到内部端口映射；本机探测公网可能受 NAT 回环限制，还需从外部网络验证。');
     const scheme = input.scheme || (this.cfg.dev ? 'http' : 'https');
     if (scheme === 'https' || input.scheme === 'https') {
-      out.https = await this.#probeUrl(`https://${host}/api/health`);
-      out.tls = await this.#probeTls(host, 443);
+      out.https = await this.#probeUrl(`https://${host}${httpsPort===443?'':':'+httpsPort}/api/health`);
+      out.tls = await this.#probeTls(host, httpsPort);
       if (out.https.ok) {
         if (out.https.viaCloudflare) out.hints.push('HTTPS 经由 Cloudflare 返回（检测到 CF 响应头）。');
         if (out.tls && out.tls.daysLeft != null && out.tls.daysLeft < 15) out.hints.push(`边缘证书将在 ${out.tls.daysLeft} 天后到期，请及时续期。`);
       } else if (out.dns.cloudflare) {
         if (out.https.status === 521) out.hints.push('521：Cloudflare 连接源站被拒绝。请先保存此页配置，再检查 Caddy 是否启动、80/443 回源端口是否放行，以及 CF 控制台的 SSL 模式是否一致。非标准端口还需配置 CDN 回源端口规则。');
+        else if (out.https.status === 523) out.hints.push('523：CF 无法到达源站。请核对 DNS 中的入口 IP（不是 CF 边缘 IP 或 NAT 出口 IP）、AAAA、回源端口映射及防火墙。');
         else if (out.https.status === 525 || out.https.status === 526) out.hints.push('源站 TLS 握手或证书校验失败：检查回源证书是否有效、覆盖当前域名，以及 CDN SSL 模式是否匹配。');
         else out.hints.push('DNS 已套 CF 但 HTTPS 探测失败：请检查 CF SSL 模式与源站回源证书（Flexible 用 HTTP，Full/Strict 需有效回源证书）。');
         out.hints.push('后端进程自检正常不代表公网回源正常；该自检不经过 Caddy、防火墙或 Cloudflare。');
       }
     }
     if (scheme === 'http' || input.scheme === 'http' || (host === this.cfg.adminHost && this.cfg.adminOrigin ? this.cfg.adminOrigin.sslMode : this.cfg.sslMode) === 'flexible') {
-      out.http = await this.#probeUrl(`http://${host}/api/health`);
+      out.http = await this.#probeUrl(`http://${host}${httpPort===80?'':':'+httpPort}/api/health`);
     }
     if (!out.hints.length) out.hints.push('未发现明显问题。');
     return out;
@@ -213,7 +219,7 @@ export class DomainManager {
 
   applyToCfg(s) {
     const cfg = this.cfg;
-    cfg.mode = s.mode; cfg.userHost = s.userHost; cfg.adminHost = s.adminHost; cfg.adminOrigin = s.adminOrigin || null;
+    cfg.nat = s.nat || null; cfg.mode = s.mode; cfg.userHost = s.userHost; cfg.adminHost = s.adminHost; cfg.adminOrigin = s.adminOrigin || null;
     cfg.cdn = s.cdn; cfg.cdnName = s.cdnName; cfg.sslMode = s.sslMode;
     cfg.cfHttpPort = s.cfHttpPort; cfg.cfHttpsPort = s.cfHttpsPort;
     cfg.realIpHeader = s.realIpHeader; cfg.cfOnly = s.cfOnly;
@@ -234,7 +240,7 @@ export class DomainManager {
 
     // Validate the complete pair before modifying runtime settings.
     buildCaddyfile(settings, {backendPort:this.cfg.port,haveCert:this.haveCert(),haveAdminCert:this.haveAdminCert()});
-    if (mode === 'manual' && settings.adminOrigin) throw new HttpError(400,'独立管理回源需要一键安装器启用特权应用；当前手动模式不能安全安装独立证书','MANUAL_ADMIN_ORIGIN');
+    if (mode === 'manual' && (settings.adminOrigin || settings.nat?.enabled)) throw new HttpError(400,'独立管理回源或 NAT 需要一键安装器启用特权应用；当前手动模式不能安全安装证书','MANUAL_ADMIN_ORIGIN');
     if (mode === 'inline' || mode === 'manual') {
       // 无特权：热更新后端行为 + 持久化运行时覆盖；manual 额外给出 Caddyfile 供手动应用
       this.persistRuntime(settings);

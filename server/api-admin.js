@@ -1,3 +1,4 @@
+import {publicCaptcha} from './captcha.js';
 import { profileDTO } from './profile.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -255,7 +256,7 @@ export function registerAdminRoutes(h, ctx) {
   // ---- 设置 ----
   route('GET', '/api/admin/settings', async (req) => {
     requireAdmin(req);
-    return { ok: true, settings: store.state.settings, limits: { maxFileSize: cfg.maxFileSize, chunkSize: cfg.chunkSize } };
+    return { ok: true, settings: { ...store.state.settings, captcha:publicCaptcha(store.state.settings) }, limits: { maxFileSize: cfg.maxFileSize, chunkSize: cfg.chunkSize } };
   });
 
   route('PATCH', '/api/admin/settings', async (req) => {
@@ -272,7 +273,7 @@ export function registerAdminRoutes(h, ctx) {
     if (typeof body.motd === 'string') patch.motd = body.motd.slice(0, 500);
     store.log({ t: 'settings.set', settings: patch });
     store.audit(store.state.admin?.username || 'admin', 'settings.update', Object.keys(patch).join(', '));
-    return { ok: true, settings: store.state.settings };
+    return { ok: true, settings: { ...store.state.settings, captcha:publicCaptcha(store.state.settings) } };
   });
 
   route('POST', '/api/admin/password', async (req) => {

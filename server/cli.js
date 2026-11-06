@@ -20,6 +20,8 @@ async function resetAdmin() {
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(user)) { console.error('用户名需为 3-32 位字母、数字、_ . -'); process.exit(2); }
   if (pass.length < 8 || pass.length > 128) { console.error('密码长度需为 8-128 位'); process.exit(2); }
   store.log({ t: 'admin.set', admin: { username: user, passHash: hashSecret(pass), createdAt: prev?.createdAt || nowSec() } });
+  // Emergency recovery also disables a misconfigured CAPTCHA without erasing its keys.
+  if(store.state.settings.captcha)store.log({t:'settings.set',settings:{captcha:{...store.state.settings.captcha,enabled:false,version:(store.state.settings.captcha.version||0)+1},riskBlocks:[]}});
   // 重置密码后使所有管理员会话失效
   for (const [hash, s] of Object.entries(store.state.sessions)) {
     if (s.kind === 'admin') store.log({ t: 'session.delete', tokenHash: hash });

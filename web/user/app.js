@@ -1,3 +1,4 @@
+import { requestCaptcha } from '/assets/js/captcha.js';
 import { Organization, installOrganizationDrag } from '/assets/js/organization.js';
 import { loadAppearance } from '/assets/js/appearance.js';
 import {
@@ -45,7 +46,7 @@ async function boot() {
   ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => document.addEventListener(ev, () => { S.lastActivity = Date.now(); }, { passive: true }));
   const saved = savedLogin();
   if (saved?.account && saved?.key) {
-    try { S.account = saved.account; await unlockWith(parseKey(saved.key), true); return; }
+    try { let current=null;try{current=await GET('/api/user/me');}catch{} S.account = saved.account; await unlockWith(parseKey(saved.key), current?.account!==saved.account); return; }
     catch { S.account = null; toast('自动登录未成功，请手动登录或稍后重试', { type: 'info' }); }
   }
   let me = null;
@@ -119,7 +120,7 @@ function buildLogin(body) {
     btn.disabled = true;
     try {
       const proof = (await tempProof(master));
-      await POST('/api/user/login', { account, proof });
+      await POST('/api/user/login', { account, proof, captchaToken:await requestCaptcha() });
       S.account = account;
       await unlockWith(master, false);
       if (remember.checked) { try { saveLogin(); } catch { toast('浏览器不允许保存凭据', { type: 'error' }); } } else forgetLogin();
@@ -146,7 +147,7 @@ function buildRegister(body) {
     try {
       const { master, keyString } = generateKey();
       const proof = await tempProof(master);
-      const r = await POST('/api/user/register', { proof });
+      const r = await POST('/api/user/register', { proof, captchaToken:await requestCaptcha() });
       S.account = r.account; S.master = master; S.pendingKey = keyString;
       setView('reveal');
     } catch (e) { toast(e.message, { type: 'error' }); btn.disabled = false; }
@@ -214,7 +215,7 @@ function renderLock() {
 async function unlockWith(master, verify) {
   if (verify) {
     const proof = await tempProof(master);
-    await POST('/api/user/login', { account: S.account, proof });
+    await POST('/api/user/login', { account: S.account, proof, captchaToken:await requestCaptcha() });
   }
   S.master = master;
   S.crypto = new CryptoClient();

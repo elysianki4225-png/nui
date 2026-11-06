@@ -19,6 +19,10 @@ try{
  r=apply({...settings,cfHttpPort:8080,cfHttpsPort:8443,adminOrigin:{cdn:'none'}});assert(r.ok,r.error);
  r=apply(settings);assert(r.ok,r.error);
  console.log('PASS mixed direct/CDN proxy configuration accepted');
+ r=apply({...settings,cdn:'none',nat:{enabled:true,publicHttpPort:10080,publicHttpsPort:10443},cfHttpPort:8080,cfHttpsPort:8443,adminOrigin:{...settings.adminOrigin,cfHttpPort:8082,cfHttpsPort:8444,nat:{enabled:true,publicHttpPort:18082,publicHttpsPort:18444}}});assert(r.ok,r.error);
+ assert.equal(r.urls.userUrl,'https://memo.example.com:10443');assert.equal(r.urls.adminUrl,'https://manage.example.net');
+ r=apply(settings);assert(r.ok,r.error);
+ console.log('PASS NAT direct and CF listeners accept separate public/internal ports with real certificate fixtures');
  const previous=readFileSync(file('config.json'),'utf8');
  r=apply({...settings,adminHost:'wrong.example.net'});assert(!r.ok&&r.rolledBack&&r.error.includes('不覆盖'));assert.equal(readFileSync(file('config.json'),'utf8'),previous);
  r=apply({...settings,adminOrigin:null});assert(!r.ok&&r.error.includes('不覆盖'));assert.equal(readFileSync(file('config.json'),'utf8'),previous);

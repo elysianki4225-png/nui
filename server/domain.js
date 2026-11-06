@@ -1,3 +1,4 @@
+import net from 'node:net';
 // 域名 / CDN 管理核心：校验、Caddyfile 生成、特权应用（供 root helper 调用）。
 // 既被后端 import，也可独立运行：
 //   node domain.js caddyfile            # 从环境变量读取参数，打印 Caddyfile
@@ -58,6 +59,7 @@ export function settingsFromCfg(cfg) {
     userHost: (cfg.userHost || '').toLowerCase(),
     adminHost: (cfg.adminHost || '').toLowerCase(),
     adminOrigin: cfg.adminOrigin || null,
+    nat: cfg.nat || null,
     cdn,
     cdnName: cfg.cdnName || (cdn === 'cloudflare' ? 'Cloudflare' : cdn === 'custom' ? '第三方 CDN' : ''),
     sslMode: cfg.sslMode || (cdn === 'none' ? 'auto' : 'flexible'),
@@ -99,40 +101,52 @@ export function normalizeDomain(input, base = {}) {
   if (cdn === 'none') sslMode = 'auto';
   else if (sslMode === 'auto') sslMode = 'flexible';
 
+  let nat = null;
+  if(src.nat?.enabled) {
+    nat={enabled:true,publicIp:String(src.nat.publicIp||'').trim()};
+    if(nat.publicIp && !net.isIP(nat.publicIp))throw new Error('NAT 公网 IP 无效');
+    if(!nat.publicIp)warnings.push('NAT 未填写服务商的入口公网 IP；探测到的出口 IP 不一定是入口 IP，请手动核对 DNS 记录。');
+    for(const [key,fallback] of [['publicHttpPort',80],['publicHttpsPort',443]]) {
+      const value=Number(src.nat[key] ?? fallback);
+      if(!Number.isInteger(value)||value<1||value>65535)throw new Error('NAT 公网端口必须为 1–65535 的整数');
+      nat[key]=value;
+    }
+    if(nat.publicHttpPort===nat.publicHttpsPort)throw new Error('NAT 公网 HTTP/HTTPS 端口不能相同');
+    warnings.push(`NAT 映射需在服务商配置：公网 HTTP ${nat.publicHttpPort} → 内部 HTTP ${src.cfHttpPort}，公网 HTTPS ${nat.publicHttpsPort} → 内部 HTTPS ${src.cfHttpsPort}；程序不会自动创建映射。`);
+    if(cdn==='none')warnings.push('NAT 直连必须提供浏览器信任的域名证书（可通过 DNS 验证签发）；不自动申请证书，不能使用仅受 CF 信任的 Origin CA 证书。');
+    for(const key of ['cfHttpPort','cfHttpsPort'])if(!Number.isInteger(Number(src[key]))||Number(src[key])<1||Number(src[key])>65535)throw new Error('NAT 内部监听端口无效');
+  }
   let cfHttpPort = parseInt(src.cfHttpPort, 10);
   let cfHttpsPort = parseInt(src.cfHttpsPort, 10);
   if (!Number.isFinite(cfHttpPort) || cfHttpPort < 1 || cfHttpPort > 65535) cfHttpPort = 80;
   if (!Number.isFinite(cfHttpsPort) || cfHttpsPort < 1 || cfHttpsPort > 65535) cfHttpsPort = 443;
-  if (cdn === 'none') { cfHttpPort = 80; cfHttpsPort = 443; }
-  if (cdn !== 'none' && cfHttpPort === cfHttpsPort) throw new Error('回源 HTTP 与 HTTPS 端口不能相同');
+  if (cdn === 'none' && !nat) { cfHttpPort = 80; cfHttpsPort = 443; }
+  if ((cdn !== 'none' || nat) && cfHttpPort === cfHttpsPort) throw new Error('回源 HTTP 与 HTTPS 端口不能相同');
 
   const requestedHeader = input && Object.hasOwn(input,'realIpHeader') ? input.realIpHeader : cdn !== cur.cdn ? defaultRealIpHeader(cdn) : src.realIpHeader;
   let realIpHeader = REAL_IP_HEADERS.includes(requestedHeader) ? requestedHeader : defaultRealIpHeader(cdn);
   const cdnName = String(src.cdnName || '').slice(0, 40) || (cdn === 'cloudflare' ? 'Cloudflare' : cdn === 'custom' ? '第三方 CDN' : '');
   const cfOnly = !!src.cfOnly;
 
-  if (cdn !== 'none' && (cfHttpPort !== 80 || cfHttpsPort !== 443)) {
-    warnings.push(`回源端口为非标准端口（HTTP ${cfHttpPort} / HTTPS ${cfHttpsPort}），请在 CDN 的回源规则中把目标端口设为对应值。`);
-  }
-  if (cdn === 'cloudflare') {
-    if (!CF_PROXY_HTTP_PORTS.includes(cfHttpPort)) warnings.push(`Cloudflare 小黄云默认不代理 HTTP 端口 ${cfHttpPort}（支持：${CF_PROXY_HTTP_PORTS.join(', ')}），请改用受支持端口或确认已开通 Spectrum。`);
-    if (!CF_PROXY_HTTPS_PORTS.includes(cfHttpsPort)) warnings.push(`Cloudflare 小黄云默认不代理 HTTPS 端口 ${cfHttpsPort}（支持：${CF_PROXY_HTTPS_PORTS.join(', ')}），请改用受支持端口或确认已开通 Spectrum。`);
+  const targetHttp=nat?.publicHttpPort || cfHttpPort,targetHttps=nat?.publicHttpsPort || cfHttpsPort;
+  if (cdn !== 'none' && (targetHttp !== 80 || targetHttps !== 443)) {
+    warnings.push(`回源公网端口为非标准端口（HTTP ${targetHttp} / HTTPS ${targetHttps}），请在 CDN 的回源规则中把目标端口设为对应值，而不是 NAT 内部端口。`);
   }
   if (cdn === 'cloudflare' && sslMode === 'strict') warnings.push('Strict 模式需要有效的 Origin CA 证书（或受信任证书），否则回源会失败。');
   if (cdn !== 'none' && sslMode === 'flexible') warnings.push('Flexible 回源为 HTTP，源站已禁用强制 HTTPS 跳转以避免重定向循环。');
 
-  const settings = { mode, userHost, adminHost, cdn, cdnName, sslMode, cfHttpPort, cfHttpsPort, realIpHeader, cfOnly };
+  const settings = { mode, userHost, adminHost, nat, cdn, cdnName, sslMode, cfHttpPort, cfHttpsPort, realIpHeader, cfOnly };
   if (src.adminOrigin != null) {
     if (!adminHost || adminHost === userHost) throw new Error('独立管理回源需要不同的管理域名');
     if (typeof src.adminOrigin !== 'object' || Array.isArray(src.adminOrigin)) throw new Error('无效管理回源配置');
     for (const k of ['cfHttpPort','cfHttpsPort']) if (src.adminOrigin[k] != null && (!Number.isInteger(Number(src.adminOrigin[k])) || Number(src.adminOrigin[k]) < 1 || Number(src.adminOrigin[k]) > 65535)) throw new Error('管理端回源端口必须为 1–65535 的整数');
     const admin = normalizeDomain({ ...src.adminOrigin, mode:'domain', userHost:adminHost, adminHost:'', adminOrigin:null });
-    settings.adminOrigin = Object.fromEntries(['cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'].map(k=>[k,admin.settings[k]]));
+    settings.adminOrigin = Object.fromEntries(['nat','cdn','cdnName','sslMode','cfHttpPort','cfHttpsPort','realIpHeader','cfOnly'].map(k=>[k,admin.settings[k]]));
     warnings.push(...admin.warnings.map(w=>'管理端：'+w));
   } else settings.adminOrigin = null;
   if (adminHost && adminHost !== userHost) {
     const a = settings.adminOrigin || settings;
-    const ports = x => x.cdn === 'none' ? [80,443] : [x.cfHttpPort,x.cfHttpsPort];
+    const ports = x => x.cdn === 'none' && !x.nat?.enabled ? [80,443] : [x.cfHttpPort,x.cfHttpsPort];
     const [uh,us]=ports(settings),[ah,as]=ports(a);
     if (uh === as || us === ah) throw new Error('两端 HTTP 与 HTTPS 监听端口冲突，请勿把同一端口同时用于两种协议');
   }
@@ -141,8 +155,9 @@ export function normalizeDomain(input, base = {}) {
 
 export function domainUrls(s, { dev = false } = {}) {
   const scheme = dev ? 'http' : 'https';
-  const userUrl = `${scheme}://${s.userHost}`;
-  const adminUrl = s.adminHost && s.adminHost !== s.userHost ? `${scheme}://${s.adminHost}` : `${userUrl}/admin/`;
+  const url=(host,origin)=>`${scheme}://${host}${!dev && origin.cdn==='none' && origin.nat?.enabled && origin.nat.publicHttpsPort!==443 ? ':'+origin.nat.publicHttpsPort : ''}`;
+  const userUrl = url(s.userHost,s);
+  const adminUrl = s.adminHost && s.adminHost !== s.userHost ? url(s.adminHost,s.adminOrigin||s) : `${userUrl}/admin/`;
   return { userUrl, adminUrl };
 }
 
@@ -157,7 +172,7 @@ function buildSingleCaddyfile(s, opts = {}) {
   L.push('# 由 nui-memo 生成（安装脚本 / 管理面板域名管理共用）');
   L.push('{');
   L.push('    admin off');
-  if (cdnOn) L.push('    auto_https off');
+  if (cdnOn || s.nat?.enabled) L.push('    auto_https off');
   L.push('}');
   const proxy = [
     `    encode zstd gzip`,
@@ -174,7 +189,11 @@ function buildSingleCaddyfile(s, opts = {}) {
   }
   const headerNoHsts = ['    header {', '        -Server', '        X-Content-Type-Options "nosniff"', '        Referrer-Policy "no-referrer"', '    }'];
   const headerHsts = ['    header {', '        -Server', '        Strict-Transport-Security "max-age=31536000; includeSubDomains"', '        X-Content-Type-Options "nosniff"', '        Referrer-Policy "no-referrer"', '    }'];
-  if (cdnOn) {
+  if(s.nat?.enabled && !cdnOn) {
+    const port=s.nat.publicHttpsPort===443?'':':'+s.nat.publicHttpsPort;
+    L.push(`http://${s.userHost}:${s.cfHttpPort} {`, `    redir https://${s.userHost}${port}{uri} 308`, '}');
+    L.push(`https://${s.userHost}:${s.cfHttpsPort} {`, `    tls ${certFile} ${keyFile}`, ...proxy, ...headerNoHsts, '}');
+  } else if (cdnOn) {
     L.push('');
     L.push(`# CDN 灵活(Flexible)回源：HTTP，不强制跳转，避免重定向循环`);
     L.push(`http://${s.userHost}:${s.cfHttpPort} {`);
@@ -209,14 +228,14 @@ export function buildCaddyfile(s, opts = {}) {
   const endpoints = [{ ...s, mode:'domain', adminHost:'', adminOrigin:null }];
   if (s.adminHost && s.adminHost !== s.userHost) endpoints.push({ ...s, ...(s.adminOrigin || {}), mode:'domain', userHost:s.adminHost, adminHost:'', adminOrigin:null });
   const backend = opts.backendPort || SYS.backendPort;
-  for (const e of endpoints) if ((e.cdn === 'none' ? [80,443] : [e.cfHttpPort,e.cfHttpsPort]).includes(backend)) throw new Error('回源监听端口不能占用后端服务端口');
+  for (const e of endpoints) if ((e.cdn === 'none' && !e.nat?.enabled ? [80,443] : [e.cfHttpPort,e.cfHttpsPort]).includes(backend)) throw new Error('回源监听端口不能占用后端服务端口');
   if (endpoints.length === 1) return buildSingleCaddyfile(endpoints[0],opts);
-  const mixed = endpoints.some(e=>e.cdn !== 'none');
+  const mixed = endpoints.some(e=>e.cdn !== 'none' || e.nat?.enabled);
   const parts = endpoints.map((e,i)=>{
     const options = i === 1 && s.adminOrigin ? { ...opts, haveCert:opts.haveAdminCert, certFile:opts.adminCertFile || SYS.adminCertFile, keyFile:opts.adminKeyFile || SYS.adminKeyFile } : opts;
     const text=buildSingleCaddyfile(e,options);
     const body=text.slice(text.indexOf('\n}\n')+3);
-    return body + (mixed && e.cdn === 'none' ? `\nhttp://${e.userHost}:80 {\n    redir https://${e.userHost}{uri} 308\n}\n` : '');
+    return body + (mixed && e.cdn === 'none' && !e.nat?.enabled ? `\nhttp://${e.userHost}:80 {\n    redir https://${e.userHost}{uri} 308\n}\n` : '');
   });
   return '# 双入口配置：同协议可共享端口，不同协议不能混用\n{\n    admin off\n' + (mixed?'    auto_https disable_redirects\n':'') + '}\n' + parts.join('\n');
 }
@@ -233,7 +252,7 @@ export function mergeConfigFile(confFile, s) {
   let cfg = {};
   try { cfg = JSON.parse(fs.readFileSync(confFile, 'utf8')); } catch { cfg = {}; }
   Object.assign(cfg, {
-    mode: s.mode, userHost: s.userHost, adminHost: s.adminHost, adminOrigin:s.adminOrigin || null,
+    mode: s.mode, userHost: s.userHost, adminHost: s.adminHost, nat:s.nat || null, adminOrigin:s.adminOrigin || null,
     cloudflare: s.cdn === 'cloudflare', cdn: s.cdn, cdnName: s.cdnName,
     sslMode: s.sslMode, cfHttpPort: s.cfHttpPort, cfHttpsPort: s.cfHttpsPort,
     realIpHeader: s.realIpHeader, cfOnly: s.cfOnly,
@@ -349,7 +368,7 @@ export function applyRequest(req, { dryRun = false } = {}) {
     } else {
       haveCert = fs.existsSync(certFile) && fs.existsSync(keyFile);
     }
-    if ((settings.sslMode === 'full' || settings.sslMode === 'strict') && !haveCert) {
+    if ((settings.sslMode === 'full' || settings.sslMode === 'strict' || (settings.nat?.enabled && settings.cdn==='none')) && !haveCert) {
       throw new Error('Full/Strict 缺少回源证书，已取消应用，避免静默降级为 HTTP。请提供证书或明确选择 Flexible。');
     }
     result.haveCert = haveCert;
@@ -379,9 +398,9 @@ export function applyRequest(req, { dryRun = false } = {}) {
         throw new Error('管理端自动签发 Origin CA 证书失败，请检查 Token 权限与域名；原配置将恢复');
       }
     }
-    if (settings.adminOrigin && ['full','strict'].includes(settings.adminOrigin.sslMode) && !haveAdminCert) throw new Error('管理端 Full/Strict 缺少独立回源证书，已取消应用');
-    if (!dryRun && haveCert && settings.cdn !== 'none') validateOriginCertificate(fs.readFileSync(certFile),fs.readFileSync(keyFile),[settings.userHost,...(!settings.adminOrigin && settings.adminHost && settings.adminHost !== settings.userHost ? [settings.adminHost] : [])]);
-    if (!dryRun && settings.adminOrigin && haveAdminCert && settings.adminOrigin.cdn !== 'none') validateOriginCertificate(fs.readFileSync(adminCertFile),fs.readFileSync(adminKeyFile),[settings.adminHost]);
+    if (settings.adminOrigin && (['full','strict'].includes(settings.adminOrigin.sslMode) || (settings.adminOrigin.nat?.enabled && settings.adminOrigin.cdn==='none')) && !haveAdminCert) throw new Error('管理端 Full/Strict 缺少独立回源证书，已取消应用');
+    if (!dryRun && haveCert && (settings.cdn !== 'none' || settings.nat?.enabled)) validateOriginCertificate(fs.readFileSync(certFile),fs.readFileSync(keyFile),[settings.userHost,...(!settings.adminOrigin && settings.adminHost && settings.adminHost !== settings.userHost ? [settings.adminHost] : [])]);
+    if (!dryRun && settings.adminOrigin && haveAdminCert && (settings.adminOrigin.cdn !== 'none' || settings.adminOrigin.nat?.enabled)) validateOriginCertificate(fs.readFileSync(adminCertFile),fs.readFileSync(adminKeyFile),[settings.adminHost]);
     result.haveAdminCert = haveAdminCert;
 
     // 写 config + 运行时域名覆盖
@@ -456,7 +475,7 @@ async function cli() {
       const env = process.env;
       const saved = env.NUI_CONF_FILE ? JSON.parse(fs.readFileSync(env.NUI_CONF_FILE,'utf8')) : {};
       s = {
-        adminOrigin:saved.adminOrigin || null,
+        nat:saved.nat || null, adminOrigin:saved.adminOrigin || null,
         mode: env.NUI_MODE || 'domain', userHost: env.NUI_USER_HOST || '', adminHost: env.NUI_ADMIN_HOST || (saved.adminOrigin ? saved.adminHost : '') || '',
         cdn: env.NUI_CDN || (env.NUI_CLOUDFLARE === '1' ? 'cloudflare' : 'none'),
         cdnName: env.NUI_CDN_NAME || '', sslMode: env.NUI_SSL_MODE || 'auto',
@@ -466,6 +485,10 @@ async function cli() {
     }
     const { settings } = normalizeDomain(s, {});
     const haveCert = (process.env.NUI_HAVE_CERT === '1') || (fs.existsSync(SYS.certFile) && fs.existsSync(SYS.keyFile));
+    if(settings.nat?.enabled && settings.cdn==='none') {
+      if(!haveCert)throw new Error('NAT 直连需要证书和私钥');
+      validateOriginCertificate(fs.readFileSync(SYS.certFile),fs.readFileSync(SYS.keyFile),[settings.userHost,...(!settings.adminOrigin && settings.adminHost?[settings.adminHost]:[])]);
+    }
     process.stdout.write(buildCaddyfile(settings, { haveCert, haveAdminCert:fs.existsSync(SYS.adminCertFile) && fs.existsSync(SYS.adminKeyFile), backendPort: parseInt(process.env.NUI_BACKEND_PORT || String(SYS.backendPort), 10) }));
     return;
   }

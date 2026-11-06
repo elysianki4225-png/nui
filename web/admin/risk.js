@@ -1,5 +1,7 @@
+import { renderCaptcha } from './captcha.js';
 import {h,GET,PATCH,POST,toast} from '/assets/js/core.js';
 export async function renderRisk(page) {
+  if(!page.querySelector('[data-captcha-section]')){const section=h('div',{'data-captcha-section':'true'});page.append(section);renderCaptcha(section);}
   const panel=h('div',{class:'panel'},h('h2',{},'风控'));page.append(panel);
   try {
     const d=await GET('/api/admin/risk');if(!panel.isConnected)return;
