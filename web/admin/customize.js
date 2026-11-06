@@ -45,7 +45,7 @@ export function renderAppearance(page) {
     const gallery = h('div', { class: 'theme-current' });
     const drawGallery = () => {
       clear(gallery);
-      for (const [key, src] of Object.entries(theme.assets)) gallery.append(h('figure', {}, h('figcaption', {}, ({ pet: '桌宠', mobile: '手机背景', tablet: '平板背景', desktop: '电脑背景' })[key]), h('img', { class: 'theme-preview', src, alt: key, loading: 'lazy' })));
+      for (const [key, src] of Object.entries(theme.assets)) gallery.append(h('figure', {}, h('figcaption', {}, ({ logo: '备忘录 Logo', pet: '桌宠', mobile: '手机背景', tablet: '平板背景', desktop: '电脑背景' })[key]), h('img', { class: 'theme-preview', src, alt: key, loading: 'lazy' })));
     };
     drawGallery();
     const userColor = h('input', { type: 'color', value: theme.userColor || '#6750a4', 'aria-label': '用户界面主色' });
@@ -66,7 +66,7 @@ export function renderAppearance(page) {
       h('div', { class: 'row wrap gap-8' }, save, h('button', { class: 'btn btn-outlined', onClick: async () => {
         try { const result = await PATCH('/api/admin/appearance', { userColor: '', adminColor: '' }); theme = result.appearance; userColor.value = adminColor.value = '#6750a4'; applyAppearance(theme, true); toast('已恢复默认配色'); } catch (e) { toast(e.message, { type: 'error' }); }
       } }, '恢复默认配色'))));
-    const slot = h('select', { class: 'tf-input', 'aria-label': '素材用途' }, ...[['pet', '桌宠'], ['mobile', '手机背景（小于 600px）'], ['tablet', '平板背景（600–1023px）'], ['desktop', '电脑背景（1024px 起）']].map(([value, label]) => h('option', { value }, label)));
+    const slot = h('select', { class: 'tf-input', 'aria-label': '素材用途' }, ...[['logo', '备忘录 Logo'], ['pet', '桌宠'], ['mobile', '手机背景（小于 600px）'], ['tablet', '平板背景（600–1023px）'], ['desktop', '电脑背景（1024px 起）']].map(([value, label]) => h('option', { value }, label)));
     const file = h('input', { type: 'file', accept: 'image/gif,image/png,image/jpeg,image/webp', 'aria-label': '选择素材' });
     const cutout = h('input', { type: 'checkbox' });
     const autoColor = h('input', { type: 'checkbox', checked: true });
@@ -105,13 +105,13 @@ export function renderAppearance(page) {
         worker.postMessage({ bytes, type: selected.type, slot: target, cutout: cutout.checked, color: autoColor.checked ? null : color.value, tolerance: +tolerance.value }, [bytes]);
       } catch (e) { finish(); if (alive && ticket === generation) message.textContent = e.message; }
     } }, '本机压缩 / 抠图并预览');
-    body.append(h('div', { class: 'panel theme-options' }, h('h3', {}, '桌宠与分设备背景'),
+    body.append(h('div', { class: 'panel theme-options' }, h('h3', {}, 'Logo、桌宠与分设备背景'),
       h('p', { class: 'muted' }, `素材跟随全站存储（当前 ${r.storageMode === 'local' ? '服务器磁盘' : 'Telegram'}），可在“存储”页迁移。背景未设置时回退到较大设备背景。`),
       slot, file, check('去除纯色背景（边缘连通抠图）', cutout), check('自动取左上角色，否则使用下方颜色', autoColor), check('背景颜色', color), check('颜色容差', tolerance),
       h('p', { class: 'muted md-body-s' }, '支持纯色 / 近似纯色背景，不是 AI 人物分割，复杂背景请预先处理。静态图片自动缩放并转 WebP；GIF 保留动画和透明度，逐帧压缩，最多 240 帧 / 总计 6400 万像素。桌宠输出 ≤2MB，背景 ≤1.5MB；超限会缩小重试，不会悄悄丢弃动画。'),
       h('div', { class: 'row wrap gap-8' }, process, h('button', { class: 'btn btn-outlined', onClick: reset }, '取消处理'), upload,
         h('button', { class: 'btn btn-outlined', onClick: async () => {
-          if (busy || !await confirmDialog({ title: '删除此位置的素材？', message: '会移除此桌宠或背景并尝试删除原存储文件。', confirmLabel: '删除' })) return;
+          if (busy || !await confirmDialog({ title: '删除此位置的素材？', message: '会移除此位置的素材并尝试删除原存储文件；Logo 将恢复默认。', confirmLabel: '删除' })) return;
           try { const result = await DEL(`/api/admin/appearance/assets/${slot.value}`); theme = result.appearance; applyAppearance(theme, true); drawGallery(); reset(); message.textContent = '素材已移除'; } catch (e) { message.textContent = e.message; }
         } }, '删除此位置素材')), message, preview,
       gallery));

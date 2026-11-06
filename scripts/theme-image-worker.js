@@ -76,7 +76,7 @@ async function processImage({ bytes, type, slot, cutout, color, tolerance }) {
   const bitmap = await createImageBitmap(new Blob([bytes], { type }));
   try {
     if (bitmap.width * bitmap.height > 32000000) throw new Error('原图超过 3200 万像素，请先缩小');
-    const max = slot === 'pet' ? 512 : slot === 'mobile' ? 960 : slot === 'tablet' ? 1440 : 1920;
+    const max = (slot === 'pet' || slot === 'logo') ? 512 : slot === 'mobile' ? 960 : slot === 'tablet' ? 1440 : 1920;
     let [width, height] = scaled(bitmap.width, bitmap.height, max);
     for (let attempt = 0; attempt < 5; attempt++) {
       const canvas = new OffscreenCanvas(width, height), ctx = canvas.getContext('2d');

@@ -97,10 +97,12 @@ export class Store {
   rebuildIndex() {
     this.accountIndex.clear();
     for (const memo of Object.values(this.state.memos)) {
-      this.indexAdd(memo);
+      let arr=this.accountIndex.get(memo.account);
+      if(!arr){arr=[];this.accountIndex.set(memo.account,arr);}
+      arr.push(memo);
     }
     for (const arr of this.accountIndex.values()) {
-      arr.sort((a, b) => (b.createdAt - a.createdAt) || (a.id < b.id ? 1 : -1));
+      arr.sort((a, b) => (b.createdAt - a.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     }
   }
 
@@ -243,6 +245,8 @@ export class Store {
     if (this.state.settings.storageMigration) return [];
     const cutoff = nowSec() - 3600;
     const stale = Object.values(this.state.memos).filter((m) => m.status === 'pending' && m.createdAt < cutoff);
+    const retired=stale.flatMap(m=>[...(m.parts||[]),m.thumb].filter(Boolean));
+    if(retired.length)this.log({t:'settings.set',settings:{storageCleanup:[...(this.state.settings.storageCleanup||[]),...retired]}});
     for (const m of stale) this.log({ t: 'memo.delete', id: m.id });
     return stale;
   }
@@ -253,7 +257,8 @@ export class Store {
     let start = 0;
     if (cursor) {
       const [ts, id] = cursor.split(':');
-      const cts = parseInt(ts, 10);
+      const cts = Number(ts);
+      if(!Number.isSafeInteger(cts)||cts<0||!id)throw new Error('无效分页游标');
       while (start < arr.length) {
         const m = arr[start];
         if (m.createdAt < cts || (m.createdAt === cts && m.id > id)) break;

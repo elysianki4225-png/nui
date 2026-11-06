@@ -1,3 +1,5 @@
+import { Captcha, registerCaptchaRoutes } from './captcha.js';
+import { RiskControl, registerRiskRoutes } from './risk.js';
 import { registerAccelerationRoutes } from './acceleration.js';
 import { registerAppearanceRoutes } from './appearance.js';
 import { registerStorageRoutes } from './storage.js';
@@ -21,6 +23,8 @@ export function publicAds(s) {
 export function createApi(ctx) {
   const { cfg, store, sessions, pool, limiter } = ctx;
   const routes = [];
+  const risk = new RiskControl(store);
+  const captcha = new Captcha(store,cfg);
   const route = (method, pattern, handler, opts = {}) => {
     const keys = [];
     const regex = new RegExp('^' + pattern.replace(/:[^/]+/g, (m) => { keys.push(m.slice(1)); return '([^/]+)'; }) + '$');
@@ -114,7 +118,8 @@ export function createApi(ctx) {
   route('POST', '/api/user/register', async (req, res, params, ip) => {
     if (!store.state.settings.registrationOpen) throw new HttpError(403, '管理员已关闭注册', 'REG_CLOSED');
     if (!limiter.allow(`reg:${ip}`, 10, 3600)) throw new HttpError(429, '注册过于频繁，请稍后再试', 'RATE_LIMIT');
-    const body = await readJson(req, 4096);
+    const body = await readJson(req, 12288);
+    await captcha.check(body,ip);
     const proof = String(body.proof || '');
     if (!/^[0-9a-f]{64}$/.test(proof)) throw new HttpError(400, '无效的注册凭据', 'BAD_PROOF');
     let account;
@@ -134,7 +139,8 @@ export function createApi(ctx) {
 
   route('POST', '/api/user/login', async (req, res, params, ip) => {
     if (!limiter.allow(`login:${ip}`, 30, 300)) throw new HttpError(429, '尝试过于频繁，请稍后再试', 'RATE_LIMIT');
-    const body = await readJson(req, 4096);
+    const body = await readJson(req, 12288);
+    await captcha.check(body,ip);
     const account = String(body.account || '').replace(/\D/g, '');
     const proof = String(body.proof || '');
     if (!/^\d{16}$/.test(account) || !/^[0-9a-f]{64}$/.test(proof)) throw new HttpError(400, '账号或密钥格式错误', 'BAD_CREDENTIALS');
@@ -193,7 +199,8 @@ export function createApi(ctx) {
 
   route('POST', '/api/admin/login', async (req, res, params, ip) => {
     if (!limiter.allow(`adminlogin:${ip}`, 15, 300)) throw new HttpError(429, '尝试过于频繁，请稍后再试', 'RATE_LIMIT');
-    const body = await readJson(req, 4096);
+    const body = await readJson(req, 12288);
+    await captcha.check(body,ip);
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
     const admin = store.state.admin;
@@ -213,6 +220,8 @@ export function createApi(ctx) {
     return { ok: true };
   });
 
+  registerCaptchaRoutes(helpers,ctx,captcha);
+  registerRiskRoutes(helpers,ctx,risk);
   registerUserRoutes(helpers, ctx);
   registerAdminRoutes(helpers, ctx);
   registerStorageRoutes(helpers, ctx);
@@ -222,7 +231,11 @@ export function createApi(ctx) {
   // ---------- 分发 ----------
   return async function handleApi(req, res, pathname) {
     const ip = clientIp(req, cfg);
-    if (!limiter.allow(`api:${ip}`, 600, 60)) {
+    // Existing authenticated administrators retain recovery access; normal auth/CSRF still apply.
+    const recovery = pathname.startsWith('/api/admin/') && !!getAdmin(req);
+    if (!recovery && risk.blocked(ip)) { sendError(res,403,'风控临时封锁，请稍后再试或联系管理员','RISK_BLOCKED');return; }
+    if (!limiter.allow(recovery ? `api-admin:${getAdmin(req).session.tokenHash}` : `api:${ip}`, 600, 60)) {
+      if(!recovery)risk.signal(ip,req,'rate');
       sendError(res, 429, '请求过于频繁', 'RATE_LIMIT');
       return;
     }
@@ -240,17 +253,20 @@ export function createApi(ctx) {
       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
       const storageControl = pathname.startsWith('/api/admin/storage/');
       const authOnly = /\/(login|logout)$/.test(pathname);
-      if (mutating && !storageControl && !authOnly && store.state.settings.storageMigration) {
+      const securityControl = ['/api/admin/risk','/api/admin/risk/unblock','/api/admin/captcha'].includes(pathname);
+      if (mutating && !storageControl && !authOnly && !securityControl && store.state.settings.storageMigration) {
         sendError(res, 503, '管理员正在迁移存储，暂时只读，请稍后重试', 'STORAGE_MIGRATING'); return;
       }
       if (mutating) pool.activeWrites++;
       try {
         const result = await r.handler(req, res, params, ip);
+        if(/\/login$/.test(pathname))risk.success(ip);
         if (result !== undefined && !res.writableEnded) sendJson(res, 200, result);
       } catch (e) {
         if (res.writableEnded) return;
         if (res.headersSent) { res.destroy(); return; }
         const status = e.status || 500;
+        if(!recovery && (e.code==='BAD_CREDENTIALS' || status===429))risk.signal(ip,req,e.code==='BAD_CREDENTIALS'?'credentials':'rate');
         if (status >= 500) console.error(`[api] ${method} ${pathname}:`, e);
         sendError(res, status, e.message || '服务器内部错误', e.code);
       } finally {

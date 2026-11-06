@@ -9,8 +9,8 @@ import assert from 'node:assert/strict';
 const prefix=process.env.NUI_BROWSER_DEPS||'/tmp/nui-browser';
 const require=createRequire(path.join(prefix,'package.json'));
 const {chromium:playwright}=require('playwright-core');
-const {default:chromium}=await import(path.join(prefix,'node_modules/@sparticuz/chromium/build/index.js'));
-const {inflate}=await import(path.join(prefix,'node_modules/@sparticuz/chromium/build/lambdafs.js'));
+const {default:chromium}=await import(path.join(prefix,'node_modules/@sparticuz/chromium/build/esm/index.js'));
+const {inflate}=await import(path.join(prefix,'node_modules/@sparticuz/chromium/build/esm/lambdafs.js'));
 const libs=await inflate(path.join(prefix,'node_modules/@sparticuz/chromium/bin/al2023.tar.br'));
 process.env.LD_LIBRARY_PATH=path.join(libs,'lib')+':'+(process.env.LD_LIBRARY_PATH||'');
 const dir=await mkdtemp(path.join(tmpdir(),'nui-browser-release-')), base='http://localhost:8796';
@@ -26,10 +26,40 @@ try {
   await post('/api/admin/setup',{username:'admin',password:'isolated-test-password'});
   await post('/api/admin/storage/start',{target:'local'});await post('/api/admin/storage/step',{});
  });await admin.reload();
- for(const label of ['概览','用户','IP 封禁','机器人','域名','前端/跨域','广告','存储','主题','设置','审计']) {
+ for(const label of ['概览','用户','IP 封禁','机器人','域名','前端/跨域','广告','存储','主题','风控','设置','审计']) {
   await admin.locator('.nav-rail-item').filter({hasText:label}).click();await admin.waitForTimeout(120);
   assert(await admin.locator('.admin-page').textContent(),label);
  }
+ // Long IPv6, unbroken notes/logs and failed batch input must not widen the page.
+ const ipv6='2001:0db8:1234:5678:9abc:def0:1234:0001-2001:0db8:1234:5678:9abc:def0:1234:ffff';
+ const longText='unbroken-log-segment'.repeat(150);
+ await admin.route('**/api/admin/ip-bans?*',route=>route.fulfill({json:{ok:true,items:[{id:'overflow-test',rule:ipv6,family:6,note:longText,createdAt:1,enabled:true}],total:1}}));
+ await admin.route('**/api/admin/ip-bans',route=>route.fulfill({json:{ok:true,added:0,errors:[{rule:ipv6+' '+longText,error:longText}]}}));
+ await admin.route('**/api/admin/audit?*',route=>route.fulfill({json:{ok:true,items:[{ts:1,actor:ipv6,action:longText,detail:longText}]}}));
+ const fits=async()=>{
+  const bad=await admin.evaluate(()=>[...document.querySelectorAll('.admin-content,.admin-page,.m-card,.audit-item,.a-detail,.dialog,.dialog-content')].filter(e=>e.getClientRects().length).filter(e=>{const r=e.getBoundingClientRect();return r.right>innerWidth+1||r.left< -1||e.scrollWidth>e.clientWidth+1;}).map(e=>e.className));
+  assert.deepEqual(bad,[],'long admin content overflow');
+ };
+ for(const [width,height] of [[320,700],[360,780],[768,1024],[1440,900]]) {
+  await admin.setViewportSize({width,height});
+  // Drawer and desktop use the same navigation state; desktop rail is hidden on phones.
+  if(width<1024) {await admin.getByRole('button',{name:'打开菜单',exact:true}).click();await admin.locator('.nav-drawer-item').filter({hasText:'IP 封禁'}).click();}
+  else await admin.locator('.nav-rail-item').filter({hasText:'IP 封禁'}).click();
+  await admin.getByText(ipv6,{exact:true}).last().waitFor({state:'attached'});await fits();
+  await admin.getByRole('button',{name:'添加规则',exact:true}).click();
+  await admin.locator('.dialog textarea').fill(ipv6+' '+longText);
+  await admin.waitForTimeout(220);await fits();
+  await admin.getByRole('button',{name:'添加',exact:true}).click();
+  await admin.waitForFunction(()=>document.querySelector('.dialog-content')?.textContent.includes('条失败'));await fits();
+  await admin.getByRole('button',{name:'取消',exact:true}).click();
+  if(width<1024){await admin.getByRole('button',{name:'打开菜单',exact:true}).click();await admin.locator('.nav-drawer-item').filter({hasText:'审计'}).click();}
+  else await admin.locator('.nav-rail-item').filter({hasText:'审计'}).click();
+  await admin.locator('.a-detail').waitFor();await fits();
+  assert((await admin.locator('.a-detail').textContent()).includes(longText),'log text must not be truncated');
+ }
+ await admin.unroute('**/api/admin/ip-bans?*');await admin.unroute('**/api/admin/audit?*');await admin.unroute('**/api/admin/ip-bans');
+ await admin.setViewportSize({width:1440,height:900});
+ console.log('PASS admin IPv6 and long logs/dialog input fit 320/360/768/1440px without truncation');
  await admin.locator('.nav-rail-item').filter({hasText:'域名'}).click();
  await admin.locator('.acceleration > summary').click();
  await admin.locator('.acceleration textarea').waitFor();
@@ -51,7 +81,7 @@ try {
  assert.equal(await admin.getByLabel('证书 PEM（certificate）',{exact:true}).inputValue(),'draft-admin-cert');
  for(const [width,height] of [[360,780],[768,1024],[1440,900],[780,360]]) {await admin.setViewportSize({width,height});assert(await admin.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
  await admin.setViewportSize({width:1440,height:900});
- await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.locator('input[type=file]').waitFor();
+ await admin.locator('.nav-rail-item').filter({hasText:'主题'}).click();await admin.locator('input[type=file]').waitFor();await admin.getByLabel('素材用途').selectOption('pet');
  await admin.locator('input[type=file]').setInputFiles({name:'pet.gif',mimeType:'image/gif',buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')});
  await admin.getByRole('button',{name:'本机压缩 / 抠图并预览'}).click();
  await admin.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='确认预览并上传').disabled);
@@ -61,6 +91,17 @@ try {
   await admin.setViewportSize({width,height});const m=await admin.evaluate(()=>{const r=document.querySelector('.site-pet').getBoundingClientRect();return{w:innerWidth,h:innerHeight,s:document.documentElement.scrollWidth,l:r.left,r:r.right,t:r.top,b:r.bottom};});
   assert(m.s<=m.w+1&&m.l>=0&&m.r<=m.w&&m.t>=0&&m.b<=m.h,JSON.stringify(m));
  }
+ // Exercise each SDK adapter and cancellation locally; external provider code is mocked.
+ const challenge=await browser.newPage();challenge.on('pageerror',e=>errors.push(e.message));await challenge.goto(base+'/admin/');
+ for(const [provider,global,url] of [['turnstile','turnstile','https://challenges.cloudflare.com/turnstile/v0/api.js*'],['recaptcha','grecaptcha','https://www.google.com/recaptcha/api.js*'],['hcaptcha','hcaptcha','https://js.hcaptcha.com/1/api.js*']]){
+  await challenge.route(url,r=>r.fulfill({contentType:'application/javascript',body:`window.${global}={ready:cb=>cb(),render:(el,o)=>{setTimeout(()=>o.callback('verified-${provider}'),20);return 1;},remove:()=>{},reset:()=>{}};`}));
+  const token=await challenge.evaluate(async provider=>{const {requestCaptcha}=await import('/assets/js/captcha.js');return requestCaptcha({enabled:true,provider,siteKey:'test-site'});},provider);
+  assert.equal(token,'verified-'+provider);await challenge.waitForFunction(()=>!document.querySelector('.dialog-scrim'));
+ }
+ await challenge.evaluate(async()=>{window.turnstile.render=(el,o)=>{window.lateCaptcha=o.callback;return 2;};const {requestCaptcha}=await import('/assets/js/captcha.js');window.pendingCaptcha=requestCaptcha({enabled:true,provider:'turnstile',siteKey:'test'}).then(()=> 'accepted',()=> 'cancelled');});
+ await challenge.getByRole('button',{name:'取消',exact:true}).click();assert.equal(await challenge.evaluate(()=>window.pendingCaptcha),'cancelled');
+ await challenge.evaluate(()=>window.lateCaptcha?.('late-token'));assert.equal(await challenge.evaluate(()=>window.pendingCaptcha),'cancelled');
+ await challenge.goto('about:blank');console.log('PASS CAPTCHA widget adapters under CSP, modal cleanup and late-callback cancellation (mock SDKs)');
  const user=await browser.newPage();user.on('pageerror',e=>errors.push(e.message));await user.goto(base+'/');
  await user.evaluate(async()=>{
   const enc=new TextEncoder(), raw=new Uint8Array(32), key=await crypto.subtle.importKey('raw',raw,'HKDF',false,['deriveBits','deriveKey']);
@@ -79,5 +120,49 @@ try {
  assert.equal(await user.locator('.search-bar').count(),1);assert(!(await user.locator('body').textContent()).includes('nullnull'));
  await user.reload();await user.getByText('Release browser memo',{exact:true}).waitFor();
  await user.setViewportSize({width:360,height:780});assert(await user.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
- assert.deepEqual(errors,[]);console.log('PASS Chromium: 11 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
+ // Organization is encrypted by the real worker and survives reload.
+ for(const name of ['Folder A','Folder B']) {
+  await user.getByRole('button',{name:'新建文件夹',exact:true}).click();
+  await user.getByLabel('文件夹名称').fill(name);
+  await user.getByRole('button',{name:'保存',exact:true}).click();
+  await user.getByText(name,{exact:true}).waitFor();
+ }
+ const memoRow=()=>user.locator('.memo-item').filter({hasText:'Release browser memo'});
+ await memoRow().getByRole('button',{name:'整理',exact:true}).click();
+ await user.getByText('移到 Folder A',{exact:true}).click();
+ await user.waitForFunction(()=>![...document.querySelectorAll('.memo-title')].some(e=>e.textContent==='Release browser memo'));
+ await user.getByText('Folder A',{exact:true}).click();await user.getByText('Release browser memo',{exact:true}).waitFor();
+ await memoRow().getByRole('button',{name:'整理',exact:true}).click();await user.getByText('移到全部文件',{exact:true}).click();
+ await user.getByRole('button',{name:'全部文件',exact:true}).click();
+ const row=name=>user.locator('.memo-item').filter({hasText:name});
+ const drag=async(from,to,touch=false)=>{
+  await row(from).scrollIntoViewIfNeeded();
+  await user.waitForTimeout(260); // settle viewport and previous 200ms FLIP before sampling coordinates
+  const a=await row(from).getByRole('button',{name:'拖动排序',exact:true}).boundingBox(),b=await row(to).boundingBox();
+  const x=a.x+a.width/2,y=a.y+a.height/2,tx=b.x+b.width/2,ty=b.y+b.height/2;
+  if(touch){const cdp=await user.context().newCDPSession(user);await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});await user.waitForTimeout(240);await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:tx,y:ty}]});await user.waitForTimeout(100);await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await cdp.detach();}
+  else{await user.mouse.move(x,y);await user.mouse.down();await user.waitForTimeout(240);await user.mouse.move(tx,ty,{steps:8});await user.waitForTimeout(100);await user.mouse.up();}
+  await user.waitForFunction(name=>document.querySelector('.memo-item .memo-title')?.textContent===name,from);
+  assert.equal(await user.locator('.org-ghost').count(),0);
+ };
+ await user.setViewportSize({width:1440,height:900});await drag('Folder B','Folder A');
+ await user.setViewportSize({width:360,height:780});await drag('Folder A','Folder B',true);
+ await user.setViewportSize({width:1440,height:900});await drag('Release browser memo','Folder A');
+ await user.setViewportSize({width:360,height:780});await drag('Folder A','Release browser memo',true);
+ await user.reload();await user.getByText('Folder A',{exact:true}).waitFor();
+ assert.equal(await user.locator('.memo-item .memo-title').first().textContent(),'Folder A');
+ assert(await user.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+ const encrypted=await user.evaluate(async()=>await (await fetch('/api/user/organization')).json());
+ assert(encrypted.revision>=6&&!JSON.stringify(encrypted).includes('Folder A'));
+ await row('Folder A').getByRole('button',{name:'整理',exact:true}).click();
+ await user.getByText('重命名文件夹',{exact:true}).click();await user.getByLabel('文件夹名称').fill('Renamed folder');
+ await user.getByRole('button',{name:'保存',exact:true}).click();await user.getByText('Renamed folder',{exact:true}).waitFor();
+ await memoRow().getByRole('button',{name:'整理',exact:true}).click();await user.getByText('移到 Renamed folder',{exact:true}).click();
+ await user.waitForFunction(()=>![...document.querySelectorAll('.memo-title')].some(e=>e.textContent==='Release browser memo'));
+ await row('Renamed folder').getByRole('button',{name:'整理',exact:true}).click();
+ await user.getByText('删除文件夹（保留内容）',{exact:true}).click();await user.getByRole('button',{name:'删除',exact:true}).click();
+ await user.getByText('Release browser memo',{exact:true}).waitFor();
+ assert.equal(await user.getByText('Renamed folder',{exact:true}).count(),0);
+ console.log('PASS Chromium: encrypted folders, membership moves, mouse + touch long-press sorting, drag cleanup and persisted order');
+ assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}

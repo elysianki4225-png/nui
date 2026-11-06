@@ -75,8 +75,20 @@ CF_HTTP_PORT=""
 CF_HTTPS_PORT=""
 CF_ONLY=0
 HAVE_CF_CERT=0
+NAT=0
+NAT_PUBLIC_IP=""
+NAT_PUBLIC_HTTP_PORT=80
+NAT_PUBLIC_HTTPS_PORT=443
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --nat-public-ip) NAT_PUBLIC_IP="${2:-}"; shift 2;;
+    --nat) NAT=1; shift;;
+    --nat-public-http-port) NAT_PUBLIC_HTTP_PORT="${2:-}"; shift 2;;
+    --nat-public-https-port) NAT_PUBLIC_HTTPS_PORT="${2:-}"; shift 2;;
+    --origin-http-port) CF_HTTP_PORT="${2:-}"; shift 2;;
+    --origin-https-port) CF_HTTPS_PORT="${2:-}"; shift 2;;
+    --tls-cert) CF_CERT="${2:-}"; shift 2;;
+    --tls-key) CF_KEY="${2:-}"; shift 2;;
     --domain) DOMAIN="${2:-}"; shift 2;;
     --domain=*) DOMAIN="${1#*=}"; shift;;
     --auto) AUTO=1; shift;;
@@ -109,6 +121,13 @@ while [[ $# -gt 0 ]]; do
   bash install.sh --update        升级程序（保留数据）
   bash install.sh --uninstall     卸载
 选项:
+  --nat          启用 NAT 映射（必须在服务商配置公网到本机 TCP 转发）
+  --nat-public-ip IP          服务商提供的入口公网 IP（不一定等于出口 IP）
+  --nat-public-http-port N   公网 HTTP 端口
+  --nat-public-https-port N  公网 HTTPS 端口
+  --origin-http-port N       本机 HTTP 监听端口
+  --origin-https-port N      本机 HTTPS 监听端口
+  --tls-cert FILE --tls-key FILE   NAT 直连所需的浏览器可信证书/私钥
   --no-firewall   不自动配置 ufw
   --keep-data     卸载时保留数据
   -y, --yes       跳过确认
@@ -344,7 +363,8 @@ check_dns() {
 
 # ---------- Cloudflare Origin CA 证书 ----------
 setup_cloudflare_cert() {
-  [[ $CLOUDFLARE -eq 1 ]] || return 0
+  [[ $CLOUDFLARE -eq 1 || $NAT -eq 1 ]] || return 0
+  if [[ $NAT -eq 1 && $CLOUDFLARE -eq 0 && -n "$CF_API_TOKEN" ]]; then die "NAT 直连不能使用 CF Origin CA 自动签发，请提供浏览器可信证书"; fi
   step "配置 Cloudflare 回源证书"
   HAVE_CF_CERT=0
   [[ -s "$CF_CERT_FILE" && -s "$CF_KEY_FILE" ]] && HAVE_CF_CERT=1
@@ -388,6 +408,7 @@ setup_cloudflare_cert() {
     warn "未提供 Origin CA 证书：仅启用 HTTP 回源（Flexible）。"
     warn "如需 Full/Strict，请在 CF 控制台 SSL/TLS -> Origin Server 创建证书，再用 --cf-cert/--cf-key 重新运行。"
   fi
+  if [[ $NAT -eq 1 && $CLOUDFLARE -eq 0 && $HAVE_CF_CERT -eq 0 ]]; then die "NAT 直连需要 --tls-cert 和 --tls-key，不尝试自动申请证书"; fi
   # 同步 sslMode 到配置（有证书默认 full，无证书 flexible）
   HAVE_CF_CERT="$HAVE_CF_CERT" "$APP_DIR/node/bin/node" -e '
     const fs=require("fs");const f=process.argv[1];
@@ -496,6 +517,15 @@ EOF
       fs.writeFileSync(f,JSON.stringify(c,null,2));
     ' "$CONF_FILE"
     ok "配置已更新（保留数据与机器人绑定）"
+  fi
+  if [[ $NAT -eq 1 ]]; then
+    "$APP_DIR/node/bin/node" -e '
+      const fs=require("fs");const file=process.argv[1],c=JSON.parse(fs.readFileSync(file));
+      const [http,https]=process.argv.slice(2,4).map(Number);
+      if(![http,https].every(p=>Number.isInteger(p)&&p>0&&p<=65535)||http===https)throw new Error("无效 NAT 公网端口");
+      const publicIp=process.argv[4]||"";if(publicIp&&!require("net").isIP(publicIp))throw new Error("无效公网 IP");
+      c.nat={enabled:true,publicHttpPort:http,publicHttpsPort:https,publicIp};fs.writeFileSync(file,JSON.stringify(c,null,2));
+    ' "$CONF_FILE" "$NAT_PUBLIC_HTTP_PORT" "$NAT_PUBLIC_HTTPS_PORT" "$NAT_PUBLIC_IP"
   fi
   repair_permissions
 }
@@ -660,8 +690,13 @@ setup_firewall() {
           info "建议: 加 --cf-only 可仅允许 Cloudflare IP 回源，防止绕过 CDN 直连"
         fi
       else
-        ufw allow 80/tcp >/dev/null 2>&1 || true
-        ufw allow 443/tcp >/dev/null 2>&1 || true
+        if [[ $NAT -eq 1 ]]; then
+          ufw allow "$CF_HTTP_PORT"/tcp >/dev/null 2>&1 || true
+          ufw allow "$CF_HTTPS_PORT"/tcp >/dev/null 2>&1 || true
+        else
+          ufw allow 80/tcp >/dev/null 2>&1 || true
+          ufw allow 443/tcp >/dev/null 2>&1 || true
+        fi
         ok "已放行 80/443"
       fi
     fi
@@ -709,6 +744,10 @@ print_summary() {
   echo "${C_BOLD}${C_GREEN}============================================================${C_RESET}"
   echo "${C_BOLD}  备忘录 部署完成${C_RESET}"
   echo "${C_BOLD}${C_GREEN}============================================================${C_RESET}"
+  if [[ $NAT -eq 1 && $CLOUDFLARE -eq 0 && $NAT_PUBLIC_HTTPS_PORT -ne 443 ]]; then
+    user_url="https://${USER_HOST}:${NAT_PUBLIC_HTTPS_PORT}"
+    if [[ -n "$ADMIN_HOST" && "$ADMIN_HOST" != "$USER_HOST" ]]; then admin_url="https://${ADMIN_HOST}:${NAT_PUBLIC_HTTPS_PORT}";else admin_url="${user_url}/admin/";fi
+  fi
   echo "  用户界面:  ${C_CYAN}${user_url}${C_RESET}"
   echo "  管理界面:  ${C_CYAN}${admin_url}${C_RESET}"
   echo
@@ -823,8 +862,11 @@ main() {
     return
   fi
   resolve_cf_defaults
-  if ! detect_ip; then
-    die "无法检测公网 IP，请检查网络后重试"
+  if [[ $NAT -eq 1 && -n "$NAT_PUBLIC_IP" ]]; then
+    "$APP_DIR/node/bin/node" -e 'if(!require("net").isIP(process.argv[1]))process.exit(1)' "$NAT_PUBLIC_IP" || die "NAT 入口公网 IP 无效"
+    PUBLIC_IP="$NAT_PUBLIC_IP";[[ "$PUBLIC_IP" == *:* ]] && IP_FAMILY=6 || IP_FAMILY=4
+  elif ! detect_ip; then
+    die "无法检测公网 IP；NAT 可用 --nat-public-ip 指定服务商入口 IP"
   fi
   ok "公网 IP: $PUBLIC_IP (IPv$IP_FAMILY)"
   choose_domain

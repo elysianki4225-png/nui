@@ -1,3 +1,4 @@
+import {domainUrls} from './domain.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -62,7 +63,7 @@ export function loadConfig() {
     const dj = path.join(cfg.dataDir, 'domain.json');
     if (fs.existsSync(dj)) {
       const d = JSON.parse(fs.readFileSync(dj, 'utf8'));
-      for (const k of ['mode', 'userHost', 'adminHost', 'adminOrigin', 'cdn', 'cdnName', 'sslMode', 'cfHttpPort', 'cfHttpsPort', 'realIpHeader', 'cfOnly']) {
+      for (const k of ['mode', 'userHost', 'adminHost', 'adminOrigin', 'nat', 'cdn', 'cdnName', 'sslMode', 'cfHttpPort', 'cfHttpsPort', 'realIpHeader', 'cfOnly']) {
         if (d[k] !== undefined) cfg[k] = d[k];
       }
       cfg.cloudflare = cfg.cdn === 'cloudflare';
@@ -83,6 +84,7 @@ export function loadConfig() {
     cfg.userUrl = `http://${cfg.userHost}`;
     cfg.adminUrl = cfg.mode === 'ip' || (cfg.adminHost && cfg.adminHost !== cfg.userHost) ? `http://${cfg.adminHost}` : `${cfg.userUrl}/admin/`;
   }
+  if(cfg.nat?.enabled || cfg.adminOrigin?.nat?.enabled)Object.assign(cfg,domainUrls(cfg,{dev:cfg.dev}));
   fs.mkdirSync(cfg.dataDir, { recursive: true });
   return cfg;
 }

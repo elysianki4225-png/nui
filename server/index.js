@@ -1,3 +1,4 @@
+import {originForRequest} from './domain.js';
 import http from 'node:http';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
@@ -37,14 +38,14 @@ function securityHeaders(req, res) {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   const csp = [
     "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://js.hcaptcha.com https://*.hcaptcha.com",
+    "style-src 'self' 'unsafe-inline' https://*.hcaptcha.com https://hcaptcha.com",
     "img-src 'self' blob: data: https:",
     "media-src 'self' blob:",
     "font-src 'self' data:",
     "connect-src 'self' https:",
     "worker-src 'self' blob:",
-    "frame-src 'self' data: blob:",
+    "frame-src 'self' data: blob: https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com https://*.hcaptcha.com",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -52,7 +53,8 @@ function securityHeaders(req, res) {
   if (!cfg.dev) csp.push("frame-ancestors 'self'");
   res.setHeader('Content-Security-Policy', csp.join('; '));
   // CDN 代理模式下 HSTS 交给边缘下发，避免 Flexible 回源时的冲突
-  if (isHttps(req, cfg) && !behindCdn(cfg)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  const origin=originForRequest(req,cfg);
+  if (isHttps(req, cfg) && !behindCdn(origin) && !origin.nat?.enabled) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 }
 
 // ---------- CORS（前端跨域白名单 / 开关） ----------

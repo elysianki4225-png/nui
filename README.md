@@ -6,6 +6,8 @@ Material Design 3 界面 · 亮/暗主题 · 响应式 · 数字账号 · 自动
 
 ---
 
+当前版本 **3.0.0**：[代码复查、修复与验证说明](docs/RELEASE-3.0.0.md)。
+
 ## 特性一览
 
 **部署**
@@ -480,3 +482,11 @@ sudo env NUI_REF=refs/tags/v2.0.0 bash /tmp/nui-install-2.0.0.sh --update
 ### 独立管理域名与回源配置
 
 域名页可同时配置用户域名和管理域名，并为管理端启用独立 CDN、SSL、HTTP/HTTPS 回源端口及证书。默认继承旧设置；只改管理端不改变用户 API 域名。两域名均走 Cloudflare 且使用不同回源端口时，还需分别配置 CF 回源规则及防火墙。详见 [双域名配置说明](docs/DUAL-DOMAIN.md)。
+
+### 文件夹、排序、风控与 Logo
+
+用户可建立加密文件夹、移动备忘录，并在 PC/手机长按拖动柄排序。管理员可选择开启保守风控及临时 IP 自动封锁，在主题中上传 Logo（跟随全站本地/TG 存储）。详见 [功能与安全边界](docs/ORGANIZATION-RISK-LOGO.md)。
+
+### NAT 部署与人机验证
+
+支持 NAT 公网/内部端口分离、带端口 HTTPS 直连或 CF 代理回源。风控页可选启用 Turnstile、Google reCAPTCHA v2、hCaptcha，保护注册及两端登录，默认关闭，含配置试验与 SSH 恢复。详见 [部署配置与安全边界](docs/NAT-CAPTCHA.md)。

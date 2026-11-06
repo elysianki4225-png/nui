@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node --experimental-vm-modules test/frontend-check.mjs
-for test in dual-domain dual-domain-cert acceleration smoke release-regression storage-safety domain-rollback cloudflare domain domain-probe frontend-deploy; do
+for test in review-regression captcha-auth captcha-nat organization-risk dual-domain dual-domain-cert acceleration smoke release-regression storage-safety domain-rollback cloudflare domain domain-probe frontend-deploy; do
   echo "===== $test ====="
   node "test/$test.mjs"
 done
@@ -12,7 +12,7 @@ for test in install-cf install-stdin install-update panel permissions; do
   bash "test/$test.sh"
 done
 if [[ -n "${NUI_JSDOM_MODULE:-}" ]]; then
-  for test in user-ui domain-ui acceleration-ui appearance-ui session-ui; do node "test/$test.cjs"; done
+  for test in organization-review user-ui domain-ui acceleration-ui appearance-ui session-ui; do node "test/$test.cjs"; done
 fi
 if [[ -n "${NUI_CANVAS_MODULE:-}" ]]; then node test/theme-worker.cjs; fi
 bash -n install.sh scripts/n-ui.sh scripts/repair-permissions.sh
