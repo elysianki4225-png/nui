@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { HttpError, readJson, readBody } from './util.js';
 
-const SLOTS = new Set(['pet', 'mobile', 'tablet', 'desktop']);
+const SLOTS = new Set(['logo', 'pet', 'mobile', 'tablet', 'desktop']);
 export function publicAppearance(settings) {
   const theme = settings.appearance || {};
   const assets = settings.themeAssets || {};

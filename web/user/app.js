@@ -1,3 +1,4 @@
+import { Organization, installOrganizationDrag } from '/assets/js/organization.js';
 import { loadAppearance } from '/assets/js/appearance.js';
 import {
   API_BASE, closeOverlays, registerOverlay, h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
@@ -21,6 +22,7 @@ const S = {
   view: 'loading', tab: 'memos',
   memos: [], decrypted: new Map(), stats: null,
   filter: 'all', pinnedOnly: false, search: '', sort: 'newest', viewMode: localStorage.getItem('memo-view') || 'list',
+  organization:null, folder:'', dragDispose:null,
   selection: new Set(), selectMode: false,
   syncing: false, syncAbort: null, nextCursor: null,
   virtual: null, detailAbort: null, lastActivity: Date.now(), autoLockTimer: null,
@@ -135,7 +137,7 @@ function buildRegister(body) {
   body.append(
     h('p', { class: 'md-body-m muted', style: { margin: '0 0 16px', lineHeight: '1.6' } },
       '注册将生成一个类似 Mullvad 的 16 位数字账号和一把随机密钥。密钥只在你手中，丢失后无法找回，也无法查看已存内容。'),
-    h('div', { class: 'auth-note', style: { marginTop: '0' } }, icon('privacy_tip'), h('span', {}, '无需邮箱或手机号，不收集任何个人信息。')),
+    h('div', { class: 'auth-note', style: { marginTop: '0' } }, icon('privacy_tip'), h('span', {}, '无需邮箱或手机号；启用风控时会使用 IP 和浏览器基础特征防止滥用。')),
     h('button', { class: 'btn btn-filled btn-block stateful mt-16', onClick: doRegister }, icon('person_add'), '生成我的账号'),
   );
   async function doRegister() {
@@ -218,6 +220,11 @@ async function unlockWith(master, verify) {
   S.crypto = new CryptoClient();
   await S.crypto.init(master.buffer, S.account);
   S.media = new MediaManager(S.crypto);
+  S.organization = new Organization(S.crypto);
+  const organization = S.organization;
+  try { await organization.load(); } catch(e) { toast('文件夹加载失败：'+e.message,{type:'error'}); }
+  if(S.organization!==organization || organization.closed)return;
+  if(organization.data.order.length)S.sort='manual';
   S.lastActivity = Date.now();
   setView('main');
   syncMemos();
@@ -241,6 +248,7 @@ async function logout() {
 
 function cleanupSession(full) {
   closeOverlays();
+  S.dragDispose?.(); S.dragDispose=null; S.organization?.close(); S.organization=null; S.folder='';
   S.syncing = false;
   S.syncAbort?.abort();
   S.detailAbort?.abort();
@@ -268,7 +276,7 @@ const NAV = [
 function renderMain() {
   const shell = h('div', { class: 'shell shell-user' });
   const rail = h('nav', { class: 'nav-rail' });
-  rail.append(h('div', { style: { marginBottom: '8px', color: 'var(--md-primary)' } }, icon('sticky_note_2', 'lg')));
+  rail.append(h('div', { class:'site-logo', style: { marginBottom: '8px', color: 'var(--md-primary)' } }, icon('sticky_note_2', 'lg')));
   for (const n of NAV) {
     rail.append(h('button', { class: `nav-rail-item stateful ${S.tab === n.id ? 'active' : ''}`, onClick: () => switchTab(n.id) },
       h('span', { class: 'nav-indicator' }, icon(n.icon)), h('span', {}, n.label)));
@@ -276,7 +284,7 @@ function renderMain() {
   const main = h('div', { class: 'main' });
   const topbar = h('header', { class: 'top-bar' },
     h('button', { class: 'icon-btn stateful nav-toggle', title: '打开菜单', 'aria-label': '打开菜单', onClick: () => S.el.openDrawer?.() }, icon('menu')),
-    h('div', { class: 'top-bar-title' }, icon('sticky_note_2'), h('span', {}, S.config?.siteName || '备忘录')),
+    h('div', { class: 'top-bar-title' }, h('span',{class:'site-logo'},icon('sticky_note_2')), h('span', {}, S.config?.siteName || '备忘录')),
     h('button', { class: 'icon-btn stateful', title: '切换主题', onClick: (e) => { toggleTheme(); } }, icon(currentTheme() === 'dark' ? 'light_mode' : 'dark_mode')),
     h('button', { class: 'icon-btn stateful', title: '账号', onClick: (e) => accountMenu(e.currentTarget) }, icon('account_circle')),
   );
@@ -324,6 +332,7 @@ function switchTab(tab) {
 }
 
 function renderTab() {
+  S.dragDispose?.(); S.dragDispose=null;
   S.virtual?.destroy(); S.virtual = null;
   clear(S.el.content);
   if (S.tab === 'memos') renderMemos();
@@ -374,7 +383,64 @@ function adSlot() {
   return wrap;
 }
 
+function organizationToolbar() {
+  const org=S.organization;
+  return h('div',{class:'row wrap gap-8',style:{padding:'8px 16px'}},
+    h('button',{class:'btn btn-text btn-sm',onClick:()=>{S.folder='';S.selection.clear();renderMemos();}},'全部文件'),
+    S.folder ? h('span',{},org.data.folders.find(f=>f.id===S.folder)?.name || '文件夹') : null,
+    h('button',{class:'btn btn-tonal btn-sm',disabled:!org.ready,onClick:()=>editFolder()},'新建文件夹'),
+    h('span',{class:'muted md-body-s'},org.ready?'按住拖动柄排序；箭头键也可调整位置。文件夹名称与排序已加密。':'文件夹未加载，刷新后重试'));
+}
+async function changeOrganization(fn) {
+  const org=S.organization;
+  try {await org.change(fn);if(org===S.organization&&S.view==='main')refreshList();}
+  catch(e){toast(e.message,{type:'error'});}
+}
+function editFolder(folder) {
+  const input=h('input',{class:'tf-input',value:folder?.name||'',maxLength:80,'aria-label':'文件夹名称'});
+  openDialog({title:folder?'重命名文件夹':'新建文件夹',content:input,actions:[{label:'取消',variant:'text'},{label:'保存',variant:'filled',keepOpen:true,onClick:async close=>{
+    const name=input.value.trim();if(!name){toast('请输入文件夹名称');return false;}
+    const org=S.organization;
+    try{await org.change(d=>{if(folder){const f=d.folders.find(x=>x.id===folder.id);if(!f)throw new Error('文件夹不存在');f.name=name;}else d.folders.push({id:crypto.randomUUID(),name});});if(org===S.organization)refreshList();close();}catch(e){toast(e.message,{type:'error'});return false;}
+  }}]});
+}
+function renderFolder(folder,grid) {
+  const item=h('div',{class:grid?'memo-cell':'memo-item',onClick:()=>{S.folder=folder.id;S.selection.clear();renderMemos();}},
+    h('div',{class:grid?'cell-media':'memo-type'},icon('folder','lg')),h('div',{class:grid?'cell-info':'memo-body'},h('div',{class:'memo-title'},folder.name),h('div',{class:'memo-sub'},'文件夹')));
+  decorateOrganization(item,folder);return item;
+}
+function decorateOrganization(item,memo) {
+  if(!S.organization?.ready||S.selectMode)return;
+  const key=(memo._folder?'f:':'m:')+memo.id;item.dataset.orderKey=key;
+  const handle=h('button',{class:'icon-btn org-drag',title:'按住拖动排序（或方向键）','aria-label':'拖动排序',onClick:e=>e.stopPropagation(),onKeydown:e=>{
+    if(!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();e.stopPropagation();
+    const keys=getVisibleItems().map(m=>(m._folder?'f:':'m:')+m.id),i=keys.indexOf(key),j=i+(e.key==='ArrowUp'?-1:1);
+    if(j>=0&&j<keys.length)reorderOrganization(key,keys[j],e.key==='ArrowDown');
+  }},icon('drag_indicator'));
+  const menu=h('button',{class:'icon-btn',title:'整理','aria-label':'整理',onClick:e=>{e.stopPropagation();
+    const entries=memo._folder ? [
+      {label:'重命名文件夹',onClick:()=>editFolder(memo)},
+      {label:'删除文件夹（保留内容）',danger:true,onClick:async()=>{if(await confirmDialog({title:'删除文件夹？',message:'里面的备忘录会移回全部文件，不会删除内容。',confirmLabel:'删除'}))changeOrganization(d=>{d.folders=d.folders.filter(f=>f.id!==memo.id);for(const [id,folder] of Object.entries(d.locations))if(folder===memo.id)delete d.locations[id];d.order=d.order.filter(k=>k!==key);});}}
+    ] : [{label:'移到全部文件',onClick:()=>changeOrganization(d=>{delete d.locations[memo.id];})},...S.organization.data.folders.map(f=>({label:'移到 '+f.name,onClick:()=>changeOrganization(d=>{d.locations[memo.id]=f.id;})}))];
+    openMenu(e.currentTarget,entries);
+  }},icon('more_vert'));
+  item.append(h('div',{class:'org-controls'},handle,menu));
+}
+async function reorderOrganization(from,to,after=false) {
+  const organization=S.organization;
+  const visible=getVisibleItems().map(m=>(m._folder?'f:':'m:')+m.id);
+  const positions=new Map([...S.el.scroll.querySelectorAll('[data-order-key]')].map(el=>[el.dataset.orderKey,el.getBoundingClientRect()]));
+  S.sort='manual';
+  await changeOrganization(d=>{
+    const keys=[...new Set([...d.order,...visible])].filter(k=>k!==from);
+    let at=keys.indexOf(to);if(at<0)return;if(after)at++;keys.splice(at,0,from);d.order=keys;
+  });
+  if(S.organization!==organization||S.view!=='main'||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  requestAnimationFrame(()=>{for(const el of S.el.scroll?.querySelectorAll('[data-order-key]')||[]){const old=positions.get(el.dataset.orderKey);if(!old)continue;const now=el.getBoundingClientRect();el.animate?.([{transform:`translate(${old.x-now.x}px,${old.y-now.y}px)`},{transform:'none'}],{duration:200,easing:'cubic-bezier(.2,.8,.2,1)'});}});
+}
+
 function renderMemos() {
+  S.dragDispose?.(); S.dragDispose=null;
   S.virtual?.destroy(); S.virtual = null;
   const c = S.el.content;
   clear(c);
@@ -391,6 +457,7 @@ function renderMemos() {
   }
   chipRow.append(h('button', { class: `chip stateful ${S.pinnedOnly ? 'selected' : ''}`, onClick: () => { S.pinnedOnly = !S.pinnedOnly; renderMemos(); } }, icon('push_pin'), '置顶'));
   const sortBtn = h('button', { class: 'icon-btn stateful', title: '排序', onClick: (e) => openMenu(e.currentTarget, [
+    { label:'手动排序',icon:'drag_indicator',selected:S.sort==='manual',onClick:()=>{S.sort='manual';refreshList();} },
     { label: '最新优先', icon: 'schedule', selected: S.sort === 'newest', onClick: () => { S.sort = 'newest'; refreshList(); } },
     { label: '最早优先', icon: 'history', selected: S.sort === 'oldest', onClick: () => { S.sort = 'oldest'; refreshList(); } },
     { label: '标题 A→Z', icon: 'sort', selected: S.sort === 'title', onClick: () => { S.sort = 'title'; refreshList(); } },
@@ -411,7 +478,7 @@ function renderMemos() {
   const empty = h('div', { class: 'empty-state hidden' }, icon('sticky_note_2'), h('h3', {}, '还没有备忘录'), h('p', {}, '点击右下角「新建」按钮，保存你的第一条加密备忘录。'));
   const syncStatus = h('div', { class: 'memo-count', style: { padding: '6px 16px', textAlign: 'center' } });
   const ad = adSlot();
-  c.append(...[searchBar, toolbar, selBar, banner, ad, scroll, empty, syncStatus].filter(Boolean));
+  c.append(...[S.organization ? organizationToolbar() : null, searchBar, toolbar, selBar, banner, ad, scroll, empty, syncStatus].filter(Boolean));
   S.el = { ...S.el, scroll, empty, count, selBar, syncStatus, searchInput };
 
   const columns = S.viewMode === 'grid' ? gridColumns(scroll.clientWidth) : 1;
@@ -420,13 +487,16 @@ function renderMemos() {
     columns,
     renderRow: (items, startIdx) => S.viewMode === 'grid' ? renderGridRow(items, startIdx) : renderListItem(items[0], startIdx),
   });
+  if(S.organization?.ready)S.dragDispose=installOrganizationDrag(scroll,reorderOrganization);
   refreshList();
 }
 
 function gridColumns(width) { return Math.max(2, Math.min(8, Math.floor((width || 360) / 170))); }
 
 function getVisibleItems() {
+  const org=S.organization?.data;
   let items = S.memos;
+  if(org)items=items.filter(m=>(org.locations[m.id]||'')===(S.folder||''));
   if (S.filter !== 'all') items = items.filter((m) => m.type === S.filter);
   if (S.pinnedOnly) items = items.filter((m) => m.pinned);
   if (S.search) {
@@ -437,12 +507,16 @@ function getVisibleItems() {
     });
   }
   const arr = [...items];
+  if(org && !S.folder && S.filter==='all' && !S.pinnedOnly && !S.selectMode)arr.unshift(...org.folders.filter(f=>!S.search||f.name.toLowerCase().includes(S.search.toLowerCase())).map(f=>({...f,_folder:true,createdAt:0,pinned:false})));
+  const ranks=new Map((org?.order||[]).map((key,i)=>[key,i]));
   arr.sort((a, b) => {
+    if(S.sort==='manual')return (ranks.get((a._folder?'f:':'m:')+a.id)??1e9)-(ranks.get((b._folder?'f:':'m:')+b.id)??1e9);
+    if(!!a._folder!==!!b._folder)return a._folder?-1:1;
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     if (S.sort === 'oldest') return a.createdAt - b.createdAt;
     if (S.sort === 'title') {
-      const ta = (S.decrypted.get(a.id)?.title || '').toLowerCase();
-      const tb = (S.decrypted.get(b.id)?.title || '').toLowerCase();
+      const ta = (a._folder ? a.name : S.decrypted.get(a.id)?.title || '').toLowerCase();
+      const tb = (b._folder ? b.name : S.decrypted.get(b.id)?.title || '').toLowerCase();
       return ta.localeCompare(tb);
     }
     return b.createdAt - a.createdAt;
@@ -501,6 +575,7 @@ function typeIconEl(memo, size = '') {
 
 function renderListItem(memo) {
   if (!memo) return h('div');
+  if(memo._folder)return renderFolder(memo,false);
   const d = S.decrypted.get(memo.id);
   const title = d?.title || (memo.type === 'text' ? '文字备忘录' : '未命名');
   const preview = d?.preview || '';
@@ -524,6 +599,7 @@ function renderListItem(memo) {
       h('div', { class: 'memo-sub' }, h('span', {}, formatRelative(memo.createdAt)), h('span', {}, '·'), h('span', {}, formatBytes(memo.size)), h('span', {}, '·'), h('span', {}, TYPE_META[memo.type]?.label || '文件'))),
     h('div', { class: 'memo-end' }, icon('chevron_right')),
   );
+  decorateOrganization(item,memo);
   return item;
 }
 
@@ -535,6 +611,7 @@ function renderGridRow(items, startIdx) {
 }
 
 function renderGridCell(memo) {
+  if(memo._folder)return renderFolder(memo,true);
   const d = S.decrypted.get(memo.id);
   const title = d?.title || (memo.type === 'text' ? '文字备忘录' : '未命名');
   const selected = S.selection.has(memo.id);
@@ -555,6 +632,7 @@ function renderGridCell(memo) {
     memo.pinned ? h('span', { class: 'cell-pin' }, icon('push_pin', 'sm')) : null,
     S.selectMode ? h('label', { class: 'check cell-check', onClick: (e) => e.stopPropagation() }, h('input', { type: 'checkbox', checked: selected, onChange: () => toggleSelect(memo.id) }), h('span', { class: 'check-box' }, icon('check'))) : null,
   );
+  decorateOrganization(cell,memo);
   return cell;
 }
 
@@ -577,7 +655,7 @@ function updateSelBar() {
   bar.append(
     h('button', { class: 'icon-btn stateful', onClick: exitSelectMode }, icon('close')),
     h('span', { class: 'count' }, `已选 ${S.selection.size} 项`),
-    h('button', { class: 'btn btn-text btn-sm stateful', onClick: () => { const all = getVisibleItems(); if (S.selection.size === all.length) S.selection.clear(); else all.forEach((m) => S.selection.add(m.id)); refreshList(); } }, icon('select_all'), '全选'),
+    h('button', { class: 'btn btn-text btn-sm stateful', onClick: () => { const all = getVisibleItems().filter(m=>!m._folder); if (S.selection.size === all.length) S.selection.clear(); else all.forEach((m) => S.selection.add(m.id)); refreshList(); } }, icon('select_all'), '全选'),
     h('button', { class: 'icon-btn stateful', title: '置顶/取消', onClick: batchPin }, icon('push_pin')),
     h('button', { class: 'icon-btn stateful danger', title: '删除', onClick: batchDelete }, icon('delete')),
   );
@@ -610,6 +688,7 @@ async function batchDelete() {
 
 // ============================ 详情 ============================
 async function openDetail(memo) {
+  S.dragDispose?.(); S.dragDispose=null;
   S.detailAbort?.abort();
   S.detailAbort = new AbortController();
   const signal = S.detailAbort.signal;
@@ -830,6 +909,7 @@ async function uploadBlob({ type, bytes, mime, metaObj, thumbBlob, onProgress })
   const meta = (await S.crypto.encryptMeta(metaObj)).meta;
   const size = bytes.byteLength;
   const parts = Math.max(1, Math.ceil(size / S.config.chunkSize));
+  const destinationFolder = S.folder, organization = S.organization;
   const created = await POST('/api/user/memos', { type, size, meta, parts });
   const id = created.id;
   const { parts: cipherParts } = await S.crypto.encryptBytes(bytes, S.config.chunkSize);
@@ -845,6 +925,7 @@ async function uploadBlob({ type, bytes, mime, metaObj, thumbBlob, onProgress })
     onProgress?.(1);
   }
   const done = await POST(`/api/user/memos/${id}/complete`);
+  if(destinationFolder && organization===S.organization && organization?.ready) { try { await organization.change(d=>{if(d.folders.some(f=>f.id===destinationFolder))d.locations[id]=destinationFolder;}); } catch(e) {toast('内容已保存，但移动到文件夹失败：'+e.message,{type:'error'});} }
   return done.memo;
 }
 
@@ -920,6 +1001,8 @@ async function editTextMemo(memo, d, existingText) {
         const content = ta.value;
         if (!content.trim()) { toast('内容不能为空', { type: 'error' }); return false; }
         try {
+          const organization=S.organization;
+          if(organization && !organization.ready)throw new Error('文件夹索引尚未加载，请刷新后再编辑');
           const bytes = new TextEncoder().encode(content);
           const metaObj = { title: title.value.trim() || content.split('\n')[0].slice(0, 40) || '文字备忘录', preview: content.slice(0, 120) };
           const meta = (await S.crypto.encryptMeta(metaObj)).meta;
@@ -928,6 +1011,10 @@ async function editTextMemo(memo, d, existingText) {
           const created = await POST('/api/user/memos', { type: 'text', size: bytes.byteLength, meta, parts: 1 });
           await PUT(`/api/user/memos/${created.id}/parts/0`, cipher);
           const done = await POST(`/api/user/memos/${created.id}/complete`);
+          if(organization && organization===S.organization)await organization.change(d=>{
+            if(d.locations[memo.id])d.locations[created.id]=d.locations[memo.id];
+            delete d.locations[memo.id];d.order=d.order.map(k=>k==='m:'+memo.id?'m:'+created.id:k);
+          });
           await DEL(`/api/user/memos/${memo.id}`);
           removeMemoLocal(memo.id);
           await addMemoLocal(done.memo);

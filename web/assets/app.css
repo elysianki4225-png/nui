@@ -363,3 +363,12 @@
 .acceleration .kv { margin-top:8px; min-width:0; }
 .acceleration li { margin-block:8px; line-height:1.6; }
 .acceleration summary { cursor:pointer; }
+
+/* Organization controls remain touch targets without disabling list scrolling. */
+.site-logo { display:inline-flex; width:32px; height:32px; flex-shrink:0; }
+.org-controls { display:flex; align-items:center; flex-shrink:0; }
+.memo-cell .org-controls { position:absolute; right:4px; top:4px; border-radius:24px; background:var(--md-surface-container); }
+.org-drag { touch-action:none; cursor:grab; user-select:none; -webkit-user-select:none; }
+.org-target { outline:2px solid var(--md-primary); outline-offset:-2px; }
+.org-ghost { position:fixed !important; left:0; top:0; margin:0 !important; z-index:20000; pointer-events:none; opacity:.92; box-shadow:0 8px 28px #0004; background:var(--md-surface-container); will-change:transform; overflow:hidden; }
+@media(max-width:599px) { .org-controls .icon-btn { width:36px; height:40px; } }

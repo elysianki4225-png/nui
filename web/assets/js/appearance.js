@@ -30,7 +30,11 @@ export function applyAppearance(theme, admin = false) {
     @media(max-width:1023px) { body { background-image:${theme.assets?.tablet ? url('tablet') : url('desktop')}; } }
     @media(max-width:599px) { body { background-image:${theme.assets?.mobile ? url('mobile') : theme.assets?.tablet ? url('tablet') : url('desktop')}; } }`;
   }
+  if(theme.assets?.logo) css += `.logo-badge, .drawer-logo, .site-logo { background-image:${url('logo')} !important; background-size:contain !important; background-position:center !important; background-repeat:no-repeat !important; } .logo-badge > svg, .drawer-logo > svg, .site-logo > svg { visibility:hidden; }`;
   style.textContent = css; document.head.append(style);
+  const favicon=document.querySelector('link[rel="icon"]');
+  const oldIcon=favicon?.getAttribute('href');
+  if(favicon && theme.assets?.logo)favicon.setAttribute('href',API_BASE+theme.assets.logo);
   let pet = null;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const update = () => {
@@ -46,5 +50,5 @@ export function applyAppearance(theme, admin = false) {
     document.body.append(pet); update();
     document.addEventListener('visibilitychange', update); reduced.addEventListener('change', update);
   }
-  dispose = () => { style.remove(); if (pet) { pet.removeAttribute('src'); pet.remove(); } document.removeEventListener('visibilitychange', update); reduced.removeEventListener('change', update); };
+  dispose = () => { if(favicon && oldIcon!=null)favicon.setAttribute('href',oldIcon); style.remove(); if (pet) { pet.removeAttribute('src'); pet.remove(); } document.removeEventListener('visibilitychange', update); reduced.removeEventListener('change', update); };
 }

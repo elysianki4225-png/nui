@@ -1,3 +1,4 @@
+import { renderRisk } from './risk.js';
 import { renderAcceleration } from './acceleration.js';
 import { renderStorage, renderAppearance } from './customize.js';
 import { loadAppearance } from '/assets/js/appearance.js';
@@ -95,6 +96,7 @@ async function adminLogout() {
 const PAGES = [
   { id: 'overview', icon: 'dashboard', label: '概览' },
   { id: 'users', icon: 'group', label: '用户' },
+  { id: 'risk', icon: 'shield', label: '风控' },
   { id: 'ipbans', icon: 'gpp_bad', label: 'IP 封禁' },
   { id: 'bots', icon: 'smart_toy', label: '机器人' },
   { id: 'domain', icon: 'language', label: '域名' },
@@ -173,7 +175,7 @@ function renderPage() {
   scroll.append(page);
   c.append(scroll);
   S.el.page = page;
-  const cleanup = ({ storage: renderStorage, appearance: renderAppearance, overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
+  const cleanup = ({ risk:renderRisk, storage: renderStorage, appearance: renderAppearance, overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
   if (typeof cleanup === 'function') S.pageCleanup = cleanup;
 }
 

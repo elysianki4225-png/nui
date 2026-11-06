@@ -18,6 +18,20 @@ export function registerUserRoutes(h, ctx) {
   const { route, requireUser, cookieOpts, USER_COOKIE } = h;
   const { cfg, store, pool, sessions, limiter } = ctx;
 
+  // Folder names, membership and order are a single client-encrypted document.
+  route('GET','/api/user/organization',async req=>{const {user}=requireUser(req);return {ok:true,revision:user.organization?.revision||0,cipher:user.organization?.cipher||null};});
+  route('PUT','/api/user/organization',async req=>{
+    const {user}=requireUser(req);
+    if(!limiter.allow(`organization:${user.account}`,120,60))throw new HttpError(429,'整理过于频繁，请稍后再试','RATE_LIMIT');
+    const body=await readJson(req,400*1024);
+    if(!Number.isSafeInteger(body.revision)||body.revision<0||typeof body.cipher!=='string'||body.cipher.length<38||body.cipher.length>360*1024||! /^[A-Za-z0-9_-]+$/.test(body.cipher))throw new HttpError(400,'无效加密文件夹数据','BAD_ORGANIZATION');
+    if(store.state.users[user.account]!==user)throw new HttpError(401,'会话已失效','UNAUTHORIZED');
+    if(body.revision!==(user.organization?.revision||0))throw new HttpError(409,'另一设备已修改文件夹，请刷新后重试','ORGANIZATION_CONFLICT');
+    const organization={revision:body.revision+1,cipher:body.cipher};
+    store.log({t:'user.update',account:user.account,patch:{organization}});
+    await pool.durable();return {ok:true,revision:organization.revision};
+  });
+
   route('GET', '/api/user/profile', async req => ({ ok: true, profile: profileDTO(requireUser(req).user) }));
   route('PATCH', '/api/user/profile', async req => {
     const { user } = requireUser(req);

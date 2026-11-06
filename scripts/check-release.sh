@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node --experimental-vm-modules test/frontend-check.mjs
-for test in dual-domain dual-domain-cert acceleration smoke release-regression storage-safety domain-rollback cloudflare domain domain-probe frontend-deploy; do
+for test in organization-risk dual-domain dual-domain-cert acceleration smoke release-regression storage-safety domain-rollback cloudflare domain domain-probe frontend-deploy; do
   echo "===== $test ====="
   node "test/$test.mjs"
 done
