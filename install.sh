@@ -598,6 +598,39 @@ EOF
   ok "域名管理自动应用已启用（管理面板「域名」页）"
 }
 
+# Fixed maintenance capability. Never grant the web process shell/sudo access.
+write_maintenance() {
+  [[ -f "$APP_DIR/scripts/maintenance-helper.mjs" ]] || return 0
+  install -D -o root -g root -m 0755 "$APP_DIR/scripts/maintenance-helper.mjs" /usr/local/libexec/nui-maintenance.mjs
+  cat > /etc/systemd/system/${SERVICE}-maintenance.service <<EOF
+[Unit]
+Description=nui-memo fixed maintenance helper
+ConditionPathExists=${DATA_DIR}/maintenance-request.json
+[Service]
+Type=oneshot
+User=root
+ExecStart=${APP_DIR}/node/bin/node /usr/local/libexec/nui-maintenance.mjs
+TimeoutStartSec=1200
+PrivateTmp=true
+NoNewPrivileges=true
+EOF
+  cat > /etc/systemd/system/${SERVICE}-maintenance.path <<EOF
+[Unit]
+Description=Watch nui-memo maintenance requests
+[Path]
+PathChanged=${DATA_DIR}/maintenance-request.json
+Unit=${SERVICE}-maintenance.service
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable ${SERVICE}-maintenance.path >/dev/null 2>&1
+  systemctl restart ${SERVICE}-maintenance.path
+  printf 'enabled\n' > "$CONF_DIR/maintenance-enabled"
+  chown root:root "$CONF_DIR/maintenance-enabled"
+  chmod 0644 "$CONF_DIR/maintenance-enabled"
+}
+
 # ---------- systemd ----------
 write_systemd() {
   step "配置 systemd 服务"
@@ -817,10 +850,11 @@ remove_panel() {
 uninstall() {
   step "卸载 备忘录"
   remove_panel
-  systemctl stop ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
-  systemctl disable ${SERVICE} caddy ${SERVICE}-domain.path 2>/dev/null || true
+  systemctl stop ${SERVICE} caddy ${SERVICE}-domain.path ${SERVICE}-maintenance.path ${SERVICE}-maintenance.service 2>/dev/null || true
+  systemctl disable ${SERVICE} caddy ${SERVICE}-domain.path ${SERVICE}-maintenance.path 2>/dev/null || true
   rm -f /etc/systemd/system/${SERVICE}.service /etc/systemd/system/caddy.service \
         /etc/systemd/system/${SERVICE}-domain.service /etc/systemd/system/${SERVICE}-domain.path
+  rm -f /etc/systemd/system/${SERVICE}-maintenance.service /etc/systemd/system/${SERVICE}-maintenance.path /usr/local/libexec/nui-maintenance.mjs
   systemctl daemon-reload
   rm -rf "$APP_DIR" "$CONF_DIR" "$CADDY_FILE"
   if [[ $KEEP_DATA -eq 1 ]]; then
@@ -830,7 +864,7 @@ uninstall() {
       read -r -p "是否同时删除所有数据（账号/封禁/机器人绑定）？[y/N] " ans </dev/tty || true
       [[ "${ans:-}" =~ ^[Yy] ]] && KEEP_DATA=0 || KEEP_DATA=1
     fi
-    if [[ $KEEP_DATA -eq 0 ]]; then rm -rf "$DATA_DIR"; ok "数据已删除"; else info "保留数据: $DATA_DIR"; fi
+    if [[ $KEEP_DATA -eq 0 ]]; then rm -rf "$DATA_DIR" /var/backups/nui-memo /var/lib/nui-maintenance; ok "数据及维护备份已删除"; else info "保留数据: $DATA_DIR"; fi
   fi
   ok "卸载完成（Caddy 二进制保留在 $CADDY_BIN）"
   exit 0
@@ -855,6 +889,7 @@ main() {
     BACKEND_PORT="$("$APP_DIR/node/bin/node" -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).port||8787)' "$CONF_FILE")"
     fetch_app
     repair_permissions
+    write_maintenance
     start_services
     install_panel
     health_check
@@ -876,6 +911,7 @@ main() {
   write_caddyfile
   write_systemd
   write_domain_apply
+  write_maintenance
   setup_firewall
   start_services
   install_panel

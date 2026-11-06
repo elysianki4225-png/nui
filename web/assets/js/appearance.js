@@ -26,7 +26,7 @@ export function applyAppearance(theme, admin = false) {
   const url = slot => theme.assets?.[slot] ? `url(${JSON.stringify(API_BASE + theme.assets[slot])})` : 'none';
   if (!admin && (theme.assets?.desktop || theme.assets?.tablet || theme.assets?.mobile)) {
     css += `body { background-image:${url('desktop')}; background-size:cover; background-position:center; background-attachment:fixed; }
-    .shell { background:transparent; } .shell .content, .auth-wrap { background:color-mix(in srgb,var(--md-surface) 80%,transparent); }
+    .shell, .user-app .main { background:transparent; } .shell .content, .auth-wrap { background:color-mix(in srgb,var(--md-surface) 80%,transparent); }
     @media(max-width:1023px) { body { background-image:${theme.assets?.tablet ? url('tablet') : url('desktop')}; } }
     @media(max-width:599px) { body { background-image:${theme.assets?.mobile ? url('mobile') : theme.assets?.tablet ? url('tablet') : url('desktop')}; } }`;
   }

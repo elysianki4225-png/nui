@@ -1,8 +1,10 @@
+import {renderMaintenance} from './maintenance.js';
+import {renderCalculator} from './calculator.js';
 import { requestCaptcha } from '/assets/js/captcha.js';
 import { renderRisk } from './risk.js';
 import { renderAcceleration } from './acceleration.js';
 import { renderStorage, renderAppearance } from './customize.js';
-import { loadAppearance } from '/assets/js/appearance.js';
+import { loadAppearance,applyAppearance } from '/assets/js/appearance.js';
 import {
   h, clear, icon, loadSprite, initTheme, toggleTheme, currentTheme, initRipple,
   toast, openDialog, confirmDialog, openMenu, GET, POST, PATCH, DEL, ApiError,
@@ -13,10 +15,12 @@ document.body.classList.add('admin-app');
 const $app = document.getElementById('app');
 const S = { view: 'loading', page: 'overview', status: null, username: null, el: {}, data: {} };
 
+initTheme();initRipple();
 boot();
 async function boot() {
-  initTheme(); initRipple(); loadSprite(); loadAppearance(true);
   try { S.status = await GET('/api/admin/status'); } catch (e) { toast('无法连接服务器: ' + e.message, { type: 'error' }); }
+  if(S.status?.disguised){S.el.page?._disposeAcceleration?.();S.pageCleanup?.();S.pageCleanup=null;applyAppearance({},true);renderCalculator($app,()=>boot());return;}
+  document.title='备忘录管理';loadSprite();loadAppearance(true);
   if (S.status?.setupRequired) setView('setup');
   else if (S.status?.loggedIn) setView('main');
   else setView('login');
@@ -71,7 +75,7 @@ function renderSetup() {
 }
 
 function renderLogin() {
-  const card = authShell('管理控制台', S.status?.siteName || '备忘录', 'admin_panel_settings');
+  const card = authShell('备忘录管理', S.status?.siteName || '备忘录', 'admin_panel_settings');
   const user = h('input', { class: 'tf-input', placeholder: ' ', autocomplete: 'username' });
   const pass = h('input', { class: 'tf-input', placeholder: ' ', type: 'password', autocomplete: 'current-password' });
   const err = h('div', { class: 'md-body-s', style: { color: 'var(--md-error)', minHeight: '18px', margin: '4px 0 8px' } });
@@ -91,7 +95,7 @@ function renderLogin() {
 
 async function adminLogout() {
   try { await POST('/api/admin/logout'); } catch {}
-  setView('login');
+  await boot();
 }
 
 // ============================ 主壳 ============================
@@ -107,6 +111,7 @@ const PAGES = [
   { id: 'storage', icon: 'storage', label: '存储' },
   { id: 'appearance', icon: 'palette', label: '主题' },
   { id: 'settings', icon: 'settings', label: '设置' },
+  { id: 'maintenance', icon: 'build', label: '系统维护' },
   { id: 'audit', icon: 'history', label: '审计' },
 ];
 
@@ -114,12 +119,12 @@ function renderMain() {
   const shell = h('div', { class: 'shell shell-admin' });
   // 桌面：高密度导航 rail
   const rail = h('nav', { class: 'nav-rail' });
-  rail.append(h('div', { style: { marginBottom: '8px', color: 'var(--md-primary)' }, title: '管理控制台' }, icon('admin_panel_settings', 'lg')));
+  rail.append(h('div', { style: { marginBottom: '8px', color: 'var(--md-primary)' }, title: '备忘录管理' }, icon('admin_panel_settings', 'lg')));
   for (const p of PAGES) rail.append(h('button', { class: `nav-rail-item stateful ${S.page === p.id ? 'active' : ''}`, onClick: () => goPage(p.id) }, h('span', { class: 'nav-indicator' }, icon(p.icon)), h('span', {}, p.label)));
   const main = h('div', { class: 'main' });
   const topbar = h('header', { class: 'top-bar' },
     h('button', { class: 'icon-btn stateful nav-toggle', title: '打开菜单', 'aria-label': '打开菜单', onClick: () => openDrawer() }, icon('menu')),
-    h('div', { class: 'top-bar-title' }, icon('admin_panel_settings'), h('span', {}, '管理控制台')),
+    h('div', { class: 'top-bar-title' }, icon('admin_panel_settings'), h('span', {}, '备忘录管理')),
     h('button', { class: 'icon-btn stateful', title: '切换主题', onClick: () => toggleTheme() }, icon(currentTheme() === 'dark' ? 'light_mode' : 'dark_mode')),
     h('button', { class: 'icon-btn stateful', title: '管理员', onClick: (e) => openMenu(e.currentTarget, [
       { label: S.username || '管理员', icon: 'person', onClick: () => {} },
@@ -139,7 +144,7 @@ function renderMain() {
   const drawer = h('nav', { class: 'nav-drawer', 'aria-label': '管理导航' },
     h('div', { class: 'drawer-head' },
       h('div', { class: 'drawer-logo' }, icon('admin_panel_settings')),
-      h('div', { class: 'title' }, '管理控制台'),
+      h('div', { class: 'title' }, '备忘录管理'),
       h('button', { class: 'icon-btn stateful', title: '关闭菜单', onClick: () => closeDrawer() }, icon('close'))),
     h('div', { class: 'drawer-section' }, '管理'));
   for (const p of PAGES) {
@@ -177,7 +182,7 @@ function renderPage() {
   scroll.append(page);
   c.append(scroll);
   S.el.page = page;
-  const cleanup = ({ risk:renderRisk, storage: renderStorage, appearance: renderAppearance, overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
+  const cleanup = ({ maintenance:renderMaintenance,risk:renderRisk, storage: renderStorage, appearance: renderAppearance, overview: renderOverview, users: renderUsers, ipbans: renderIpBans, bots: renderBots, domain: renderDomain, frontend: renderFrontend, ads: renderAds, settings: renderSettings, audit: renderAudit }[S.page] || renderOverview)(page);
   if (typeof cleanup === 'function') S.pageCleanup = cleanup;
 }
 

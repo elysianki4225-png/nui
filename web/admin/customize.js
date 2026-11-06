@@ -1,4 +1,4 @@
-import { h, clear, icon, GET, POST, PATCH, PUT, DEL, toast, confirmDialog, formatBytes } from '/assets/js/core.js';
+import { h, clear, icon, uploadWithProgress, GET, POST, PATCH, PUT, DEL, toast, confirmDialog, formatBytes } from '/assets/js/core.js';
 import { applyAppearance } from '/assets/js/appearance.js';
 
 export function renderStorage(page) {
@@ -36,7 +36,7 @@ export function renderStorage(page) {
 }
 
 export function renderAppearance(page) {
-  let alive = true, cancelWork = () => {}, previewURL = '', processed = null, theme, busy = false, generation = 0;
+  let alive = true, uploadAbort=null, cancelWork = () => {}, previewURL = '', processed = null, theme, busy = false, generation = 0;
   const disposeURL = () => { if (previewURL) URL.revokeObjectURL(previewURL); previewURL = ''; };
   const heading = h('h2', {}, '主题'); const body = h('div', { class: 'theme-editor' }); page.append(heading, body);
   const check = (label, input) => h('label', { class: 'row gap-8 wrap' }, input, h('span', {}, label));
@@ -74,17 +74,21 @@ export function renderAppearance(page) {
     const tolerance = h('input', { type: 'range', min: 0, max: 120, value: 35, 'aria-label': '抠图容差' });
     const preview = h('img', { class: 'theme-preview', hidden: true, alt: '处理结果预览' });
     const message = h('p', { role: 'status', class: 'muted' });
+    const progress=h('progress',{class:'theme-progress',max:1,value:0,hidden:true,'aria-label':'素材处理及上传进度'});
+    const cancelUpload=h('button',{class:'btn btn-outlined',hidden:true,onClick:()=>uploadAbort?.abort()},'取消上传');
     const upload = h('button', { class: 'btn btn-filled', disabled: true, onClick: async () => {
       if (!processed || busy) return; busy = true; upload.disabled = true;
-      try { const result = await PUT(`/api/admin/appearance/assets/${processed.slot}`, processed.blob); theme = result.appearance; applyAppearance(theme, true); drawGallery(); message.textContent = '素材已上传。桌宠需开启上方开关；背景按设备自动显示。'; }
-      catch (e) { message.textContent = e.message; } finally { busy = false; if (alive) upload.disabled = !processed; }
+      uploadAbort=new AbortController();cancelUpload.hidden=false;progress.hidden=false;progress.value=0;message.textContent='正在上传到服务器…';
+      for(const el of [slot,file,cutout,autoColor,color,tolerance,process])el.disabled=true;
+      try { const result = await uploadWithProgress(`/api/admin/appearance/assets/${processed.slot}`, processed.blob,p=>{if(!alive)return;if(p===null){progress.removeAttribute('value');message.textContent='正在上传到服务器…';}else if(p>=1){progress.removeAttribute('value');message.textContent='传输完成，正在写入存储，请稍候…';}else{progress.value=p;message.textContent=`上传到服务器 · ${Math.round(p*100)}%`;}},{signal:uploadAbort.signal});if(!alive)return;progress.value=1; theme = result.appearance; applyAppearance(theme, true); drawGallery(); message.textContent = '素材已上传。桌宠需开启上方开关；背景按设备自动显示。'; }
+      catch (e) { if(alive){progress.hidden=true;message.textContent=e.name==='AbortError'?'已取消上传。如果传输已完成，存储可能仍在处理，请刷新素材列表确认。':e.message;} } finally { busy=false;uploadAbort=null;cancelUpload.hidden=true;if(alive){upload.disabled=!processed;for(const el of [slot,file,cutout,autoColor,color,tolerance,process])el.disabled=false;} }
     } }, '确认预览并上传');
-    const reset = () => { cancelWork(); generation++; processed = null; upload.disabled = true; disposeURL(); preview.removeAttribute('src'); preview.hidden = true; };
+    const reset = () => { if(busy)return;progress.hidden=true;cancelWork(); generation++; processed = null; upload.disabled = true; disposeURL(); preview.removeAttribute('src'); preview.hidden = true; };
     for (const el of [slot, file, cutout, autoColor, color, tolerance]) el.addEventListener('change', reset);
     const process = h('button', { class: 'btn btn-tonal', onClick: async () => {
       if (busy) return; reset(); const selected = file.files[0]; if (!selected) { message.textContent = '请先选择图片'; return; }
       if (selected.size > 12 * 1024 * 1024 || !['image/gif', 'image/png', 'image/jpeg', 'image/webp'].includes(selected.type)) { message.textContent = '请选择 12MB 以内的 GIF、PNG、JPEG 或 WebP'; return; }
-      const target = slot.value, ticket = generation; process.disabled = true; message.textContent = '正在本机处理，原图不会上传…';
+      const target = slot.value, ticket = generation; progress.hidden=false;progress.removeAttribute('value');process.disabled = true; message.textContent = '正在本机处理，原图不会上传…';
       let worker = null, timer = null;
       const finish = () => { clearTimeout(timer); worker?.terminate(); worker = null; if (ticket === generation) { if (alive) process.disabled = false; cancelWork = () => {}; } };
       cancelWork = () => { finish(); if (alive) message.textContent = '已取消处理'; };
@@ -94,10 +98,10 @@ export function renderAppearance(page) {
         timer = setTimeout(() => { finish(); if (alive) message.textContent = '处理超过 90 秒已停止，请缩小素材'; }, 90000);
         worker.onmessage = ({ data }) => {
           if (!alive || ticket !== generation) { finish(); return; }
-          if ('progress' in data) { message.textContent = `${data.stage} · ${data.progress}%`; return; }
+          if ('progress' in data) { progress.value=Math.max(0,Math.min(1,data.progress/100));message.textContent = `${data.stage} · ${data.progress}%`; return; }
           finish();
-          if (data.error) { message.textContent = data.error; return; }
-          processed = { slot: target, blob: new Blob([data.bytes], { type: data.type }) };
+          if (data.error) { progress.hidden=true;message.textContent = data.error; return; }
+          progress.value=1;processed = { slot: target, blob: new Blob([data.bytes], { type: data.type }) };
           previewURL = URL.createObjectURL(processed.blob); preview.src = previewURL; preview.hidden = false; upload.disabled = false;
           message.textContent = `${formatBytes(selected.size)} → ${formatBytes(processed.blob.size)} · ${data.width}×${data.height} · ${data.frames} 帧 · ${data.type}。请检查预览，再确认上传。`;
         };
@@ -109,13 +113,13 @@ export function renderAppearance(page) {
       h('p', { class: 'muted' }, `素材跟随全站存储（当前 ${r.storageMode === 'local' ? '服务器磁盘' : 'Telegram'}），可在“存储”页迁移。背景未设置时回退到较大设备背景。`),
       slot, file, check('去除纯色背景（边缘连通抠图）', cutout), check('自动取左上角色，否则使用下方颜色', autoColor), check('背景颜色', color), check('颜色容差', tolerance),
       h('p', { class: 'muted md-body-s' }, '支持纯色 / 近似纯色背景，不是 AI 人物分割，复杂背景请预先处理。静态图片自动缩放并转 WebP；GIF 保留动画和透明度，逐帧压缩，最多 240 帧 / 总计 6400 万像素。桌宠输出 ≤2MB，背景 ≤1.5MB；超限会缩小重试，不会悄悄丢弃动画。'),
-      h('div', { class: 'row wrap gap-8' }, process, h('button', { class: 'btn btn-outlined', onClick: reset }, '取消处理'), upload,
+      h('div', { class: 'row wrap gap-8' }, process, h('button', { class: 'btn btn-outlined', onClick: reset }, '取消处理'), upload,cancelUpload,
         h('button', { class: 'btn btn-outlined', onClick: async () => {
           if (busy || !await confirmDialog({ title: '删除此位置的素材？', message: '会移除此位置的素材并尝试删除原存储文件；Logo 将恢复默认。', confirmLabel: '删除' })) return;
           try { const result = await DEL(`/api/admin/appearance/assets/${slot.value}`); theme = result.appearance; applyAppearance(theme, true); drawGallery(); reset(); message.textContent = '素材已移除'; } catch (e) { message.textContent = e.message; }
-        } }, '删除此位置素材')), message, preview,
+        } }, '删除此位置素材')), progress,message, preview,
       gallery));
   }
   init().catch(e => { if (alive) body.append(h('p', {}, e.message)); });
-  return () => { alive = false; cancelWork(); disposeURL(); processed = null; };
+  return () => { alive = false;uploadAbort?.abort(); cancelWork(); disposeURL(); processed = null; };
 }

@@ -179,39 +179,48 @@ export function confirmDialog({ title, message, confirmLabel = '确定', danger 
 }
 
 // ---------- 菜单 ----------
-export function openMenu(anchor, items) {
+export function openMenu(anchor, items, point) {
+  let closed=false;
   const scrim = h('div', { class: 'menu-scrim' });
   const menu = h('div', { class: 'menu', role: 'menu' });
   for (const item of items) {
     if (item.divider) { menu.append(h('div', { class: 'menu-divider' })); continue; }
     menu.append(h('div', {
       class: `menu-item stateful ${item.danger ? 'danger' : ''} ${item.selected ? 'selected' : ''}`,
-      role: 'menuitem',
-      onClick: () => { close(); item.onClick?.(); },
+      role: 'menuitem',tabindex:item.disabled?-1:0,'aria-disabled':item.disabled?'true':'false',
+      onClick: () => { if(item.disabled)return;close(); item.onClick?.(); },
     }, item.icon ? icon(item.icon) : null, h('span', { class: 'flex-1' }, item.label), item.selected ? icon('check', 'sm') : null));
   }
   const unregister = registerOverlay(() => close(true));
   function close(immediate = false) {
+    if(closed)return;closed=true;
     unregister();
+    anchor.focus?.({preventScroll:true});
     menu.classList.remove('show');
     document.removeEventListener('keydown', onKey);
     if (immediate === true) { scrim.remove(); menu.remove(); }
     else setTimeout(() => { scrim.remove(); menu.remove(); }, 180);
   }
-  function onKey(e) { if (e.key === 'Escape') close(); }
+  function onKey(e) {
+    if(e.key==='Escape'){e.preventDefault();close();return;}
+    const choices=[...menu.querySelectorAll('[role=menuitem]:not([aria-disabled=true])')];
+    const at=choices.indexOf(document.activeElement);
+    if(['ArrowDown','ArrowUp','Home','End'].includes(e.key)){e.preventDefault();const i=e.key==='Home'?0:e.key==='End'?choices.length-1:e.key==='ArrowDown'?(at+1)%choices.length:(at-1+choices.length)%choices.length;choices[i]?.focus();}
+    if(['Enter',' '].includes(e.key)&&choices.includes(document.activeElement)){e.preventDefault();document.activeElement.click();}
+  }
   scrim.addEventListener('pointerdown', close);
   document.addEventListener('keydown', onKey);
   document.body.append(scrim, menu);
-  const rect = anchor.getBoundingClientRect();
+  const rect = point?{left:point.x,right:point.x,top:point.y,bottom:point.y}:anchor.getBoundingClientRect();
   const mw = menu.offsetWidth, mh = menu.offsetHeight;
-  let left = rect.right - mw;
+  let left = point?rect.left:rect.right - mw;
   let top = rect.bottom + 4;
   if (left < 8) left = 8;
   if (left + mw > innerWidth - 8) left = innerWidth - mw - 8;
   if (top + mh > innerHeight - 8) top = Math.max(8, rect.top - mh - 4);
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
-  requestAnimationFrame(() => menu.classList.add('show'));
+  requestAnimationFrame(() => {if(!closed){menu.classList.add('show');menu.querySelector('[role=menuitem]:not([aria-disabled=true])')?.focus({preventScroll:true});}});
   return close;
 }
 
@@ -330,3 +339,18 @@ export const TYPE_META = {
   video: { icon: 'movie', label: '视频' },
   file: { icon: 'insert_drive_file', label: '文件' },
 };
+
+export function uploadWithProgress(path,blob,onProgress,{signal}={}) {
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();let done=false;
+    const finish=(err,data)=>{if(done)return;done=true;signal?.removeEventListener('abort',abort);err?reject(err):resolve(data);};
+    const abort=()=>xhr.abort();
+    xhr.open('PUT',API_BASE+path);xhr.setRequestHeader('X-Memo-Client','web');xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.timeout=180000;
+    xhr.upload.onprogress=e=>onProgress(e.lengthComputable?e.loaded/e.total:null);
+    xhr.upload.onload=()=>onProgress(1);
+    xhr.onload=()=>{try{const data=JSON.parse(xhr.responseText);if(xhr.status<200||xhr.status>=300||data.ok===false)return finish(new ApiError(xhr.status,data.error||'上传失败',data.code));finish(null,data);}catch{finish(new Error('服务器返回无效上传结果'));}};
+    xhr.onerror=()=>finish(new Error('上传网络失败，请重试'));xhr.ontimeout=()=>finish(new Error('上传或存储处理超时，请检查素材列表后再试'));xhr.onabort=()=>finish(new DOMException('上传已取消','AbortError'));
+    if(signal?.aborted){finish(new DOMException('上传已取消','AbortError'));return;}
+    signal?.addEventListener('abort',abort,{once:true});try{xhr.send(blob);}catch(e){finish(e);}
+  });
+}

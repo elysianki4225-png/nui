@@ -11,6 +11,7 @@ import { base32Encode, CryptoClient, generateKey, parseKey, formatKey, cryptoAva
 import { MediaManager } from '/assets/js/media.js';
 import { VirtualView } from '/assets/js/virtual.js';
 
+document.body.classList.add('user-app');
 const $app = document.getElementById('app');
 const REMEMBER_KEY = 'memo-remember';
 const SAVED_LOGIN = 'memo-saved-login';
@@ -281,6 +282,7 @@ function renderMain() {
   const shell = h('div', { class: 'shell shell-user' });
   const rail = h('nav', { class: 'nav-rail' });
   rail.append(h('div', { class:'site-logo', style: { marginBottom: '8px', color: 'var(--md-primary)' } }, icon('sticky_note_2', 'lg')));
+  rail.append(h('button',{class:'btn btn-tonal workspace-new',onClick:()=>{switchTab('memos');openEditor();}},icon('add'),'新建'));
   for (const n of NAV) {
     rail.append(h('button', { class: `nav-rail-item stateful ${S.tab === n.id ? 'active' : ''}`, onClick: () => switchTab(n.id) },
       h('span', { class: 'nav-indicator' }, icon(n.icon)), h('span', {}, n.label)));
@@ -414,6 +416,9 @@ function renderFolder(folder,grid) {
   decorateOrganization(item,folder);return item;
 }
 function decorateOrganization(item,memo) {
+  item.tabIndex=0;
+  item.addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();if(document.querySelector('.org-ghost'))return;openItemMenu(item,memo,{x:e.clientX,y:e.clientY});});
+  item.addEventListener('keydown',e=>{if(e.target===item&&['Enter',' '].includes(e.key)){e.preventDefault();item.click();return;}if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();e.stopPropagation();openItemMenu(item,memo);}});
   if(!S.organization?.ready||S.selectMode)return;
   const key=(memo._folder?'f:':'m:')+memo.id;item.dataset.orderKey=key;
   const handle=h('button',{class:'icon-btn org-drag',title:'按住拖动排序（或方向键）','aria-label':'拖动排序',onClick:e=>e.stopPropagation(),onKeydown:e=>{
@@ -422,13 +427,41 @@ function decorateOrganization(item,memo) {
     if(j>=0&&j<keys.length)reorderOrganization(key,keys[j],e.key==='ArrowDown');
   }},icon('drag_indicator'));
   const menu=h('button',{class:'icon-btn',title:'整理','aria-label':'整理',onClick:e=>{e.stopPropagation();
-    const entries=memo._folder ? [
-      {label:'重命名文件夹',onClick:()=>editFolder(memo)},
-      {label:'删除文件夹（保留内容）',danger:true,onClick:async()=>{if(await confirmDialog({title:'删除文件夹？',message:'里面的备忘录会移回全部文件，不会删除内容。',confirmLabel:'删除'}))changeOrganization(d=>{d.folders=d.folders.filter(f=>f.id!==memo.id);for(const [id,folder] of Object.entries(d.locations))if(folder===memo.id)delete d.locations[id];d.order=d.order.filter(k=>k!==key);});}}
-    ] : [{label:'移到全部文件',onClick:()=>changeOrganization(d=>{delete d.locations[memo.id];})},...S.organization.data.folders.map(f=>({label:'移到 '+f.name,onClick:()=>changeOrganization(d=>{d.locations[memo.id]=f.id;})}))];
-    openMenu(e.currentTarget,entries);
+    openItemMenu(e.currentTarget,memo);
   }},icon('more_vert'));
   item.append(h('div',{class:'org-controls'},handle,menu));
+}
+function openItemMenu(anchor,memo,point){
+  const org=S.organization;
+  if(!org?.ready)return toast('文件夹尚未加载，请稍候');
+  if(S.selectMode&&S.selection.has(memo.id))return openMenu(anchor,[
+    {label:`已选 ${S.selection.size} 项`,disabled:true},{label:'置顶/取消置顶所选',icon:'push_pin',onClick:batchPin},
+    {label:'删除所选',icon:'delete',danger:true,onClick:batchDelete},{label:'退出多选',onClick:exitSelectMode}],point);
+  const entries=memo._folder?[
+    {label:'打开',icon:'folder',onClick:()=>{S.folder=memo.id;S.selection.clear();renderMemos();}},
+    {label:'重命名文件夹',icon:'edit',onClick:()=>editFolder(memo)},
+    {divider:true},{label:'删除文件夹（保留内容）',icon:'delete',danger:true,onClick:async()=>{if(await confirmDialog({title:'删除文件夹？',message:'内容移回全部文件，不会删除备忘录。',confirmLabel:'删除'}))changeOrganization(d=>{d.folders=d.folders.filter(f=>f.id!==memo.id);for(const [id,f] of Object.entries(d.locations))if(f===memo.id)delete d.locations[id];d.order=d.order.filter(k=>k!=='f:'+memo.id);});}}
+  ]:[
+    {label:'打开',icon:'open_in_new',onClick:()=>openDetail(memo)},
+    {label:'下载',icon:'download',onClick:()=>downloadMemo(memo,S.decrypted.get(memo.id)||{})},
+    {label:'重命名',icon:'edit',onClick:()=>renameMemo(memo)},
+    {label:memo.pinned?'取消置顶':'置顶',icon:'push_pin',onClick:async()=>{try{const r=await PATCH(`/api/user/memos/${memo.id}`,{pinned:!memo.pinned});memo.pinned=r.memo.pinned;refreshList();}catch(e){toast(e.message,{type:'error'});}}},
+    {divider:true},
+    {label:'移到全部文件',icon:'drive_file_move',onClick:()=>changeOrganization(d=>{delete d.locations[memo.id];})},
+    ...org.data.folders.map(f=>({label:'移到 '+f.name,icon:'folder',onClick:()=>changeOrganization(d=>{d.locations[memo.id]=f.id;})})),
+    {divider:true},{label:'选择',icon:'check_circle',onClick:()=>{S.selectMode=true;S.selection.add(memo.id);refreshList();}},
+    {label:'删除',icon:'delete',danger:true,onClick:async()=>{if(!await confirmDialog({title:'删除备忘录？',message:'永久删除，无法恢复。',confirmLabel:'删除',danger:true}))return;try{await DEL(`/api/user/memos/${memo.id}`);S.memos=S.memos.filter(m=>m.id!==memo.id);S.decrypted.delete(memo.id);S.media?.release(memo.id);refreshList();}catch(e){toast(e.message,{type:'error'});}}}
+  ];
+  openMenu(anchor,entries,point);
+}
+function renameMemo(memo){
+  const crypto=S.crypto,d=S.decrypted.get(memo.id);if(!crypto||!d)return toast('请等待内容解密后重试');
+  let saving=false;
+  const name=h('input',{class:'tf-input',value:d.title||'',maxLength:120,'aria-label':'新名称'});
+  openDialog({title:'重命名',content:name,actions:[{label:'取消'},{label:'保存',keepOpen:true,onClick:async close=>{
+    if(saving)return;const title=name.value.trim();if(!title)return toast('请输入名称');saving=true;
+    try{const next={...d,title},encrypted=await crypto.encryptMeta(next);if(S.crypto!==crypto)return;await PATCH(`/api/user/memos/${memo.id}`,{meta:encrypted.meta});if(S.crypto!==crypto)return;memo.meta=encrypted.meta;S.decrypted.set(memo.id,next);refreshList();close();}catch(e){toast(e.message,{type:'error'});}finally{saving=false;}
+  }}]});
 }
 async function reorderOrganization(from,to,after=false) {
   const organization=S.organization;
@@ -483,6 +516,7 @@ function renderMemos() {
   const empty = h('div', { class: 'empty-state hidden' }, icon('sticky_note_2'), h('h3', {}, '还没有备忘录'), h('p', {}, '点击右下角「新建」按钮，保存你的第一条加密备忘录。'));
   const syncStatus = h('div', { class: 'memo-count', style: { padding: '6px 16px', textAlign: 'center' } });
   const ad = adSlot();
+  c.append(h('div',{class:'workspace-heading'},h('h1',{},S.folder?'文件夹':'我的文件'),h('span',{class:'muted'},'端到端加密')));
   c.append(...[S.organization ? organizationToolbar() : null, searchBar, toolbar, selBar, banner, ad, scroll, empty, syncStatus].filter(Boolean));
   S.el = { ...S.el, scroll, empty, count, selBar, syncStatus, searchInput };
 

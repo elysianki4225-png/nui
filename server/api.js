@@ -1,3 +1,5 @@
+import {Maintenance,registerMaintenanceRoutes} from './maintenance.js';
+import {AdminDisguise,registerDisguiseRoutes} from './admin-disguise.js';
 import {EntryGate,registerEntryRoutes} from './entry-gate.js';
 import { Captcha, registerCaptchaRoutes } from './captcha.js';
 import { RiskControl, registerRiskRoutes } from './risk.js';
@@ -27,6 +29,8 @@ export function createApi(ctx) {
   const risk = new RiskControl(store);
   const captcha = new Captcha(store,cfg);
   const entryGate = new EntryGate(store);
+  const disguise = new AdminDisguise(store);
+  const maintenance = new Maintenance(ctx);
   const route = (method, pattern, handler, opts = {}) => {
     const keys = [];
     const regex = new RegExp('^' + pattern.replace(/:[^/]+/g, (m) => { keys.push(m.slice(1)); return '([^/]+)'; }) + '$');
@@ -172,7 +176,7 @@ export function createApi(ctx) {
   });
 
   // ---------- 管理员初始化 / 登录 ----------
-  route('GET', '/api/admin/status', async (req) => ({
+  route('GET', '/api/admin/status', async (req) => !getAdmin(req)&&!disguise.unlocked(req)?{ok:true,disguised:true}:({
     ok: true,
     setupRequired: !store.state.admin,
     loggedIn: !!getAdmin(req),
@@ -219,11 +223,14 @@ export function createApi(ctx) {
     const a = getAdmin(req);
     if (a) sessions.delete(a.token);
     clearCookie(res, ADMIN_COOKIE, cookieOpts(req));
+    clearCookie(res, 'memo_disguise', cookieOpts(req));
     return { ok: true };
   });
 
   registerCaptchaRoutes(helpers,ctx,captcha);
   registerEntryRoutes(helpers,ctx,captcha,entryGate);
+  registerDisguiseRoutes(helpers,ctx,disguise);
+  registerMaintenanceRoutes(helpers,ctx,maintenance);
   registerRiskRoutes(helpers,ctx,risk);
   registerUserRoutes(helpers, ctx);
   registerAdminRoutes(helpers, ctx);
@@ -236,6 +243,7 @@ export function createApi(ctx) {
     const ip = clientIp(req, cfg);
     // Existing authenticated administrators retain recovery access; normal auth/CSRF still apply.
     const recovery = pathname.startsWith('/api/admin/') && !!getAdmin(req);
+    if(pathname.startsWith('/api/admin/')&&!recovery&&!disguise.unlocked(req)&&!['/api/admin/status','/api/admin/disguise/unlock'].includes(pathname)){sendError(res,404,'页面不存在','NOT_FOUND');return;}
     if (!recovery && risk.blocked(ip)) { sendError(res,403,'风控临时封锁，请稍后再试或联系管理员','RISK_BLOCKED');return; }
     if (!limiter.allow(recovery ? `api-admin:${getAdmin(req).session.tokenHash}` : `api:${ip}`, 600, 60)) {
       if(!recovery)risk.signal(ip,req,'rate');
@@ -260,7 +268,8 @@ export function createApi(ctx) {
       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
       const storageControl = pathname.startsWith('/api/admin/storage/');
       const authOnly = /\/(login|logout)$/.test(pathname);
-      const securityControl = ['/api/entry','/api/admin/risk','/api/admin/risk/unblock','/api/admin/captcha'].includes(pathname);
+      const securityControl = ['/api/entry','/api/admin/risk','/api/admin/risk/unblock','/api/admin/captcha','/api/admin/disguise','/api/admin/disguise/unlock'].includes(pathname);
+      if(mutating&&maintenance.busy()&&!['/api/admin/login','/api/admin/logout','/api/admin/disguise/unlock','/api/entry','/api/admin/maintenance/run','/api/admin/maintenance/check'].includes(pathname)){sendError(res,503,'正在维护，暂时只读，请稍后重试','MAINTENANCE_BUSY');return;}
       if (mutating && !storageControl && !authOnly && !securityControl && store.state.settings.storageMigration) {
         sendError(res, 503, '管理员正在迁移存储，暂时只读，请稍后重试', 'STORAGE_MIGRATING'); return;
       }
