@@ -1113,7 +1113,19 @@ async function loadProfileEditor(container) {
     if (!container.isConnected) return;
     const name = h('input', { class: 'tf-input', value: profile.nickname, maxlength: 24, placeholder: '网名（唯一）', 'aria-label': '网名' });
     const bio = h('textarea', { class: 'tf-input', value: profile.bio, maxlength: 280, placeholder: '账户简介（最多 280 字）', 'aria-label': '账户简介' });
-    const avatar = h('img', { class: 'profile-avatar', alt: '头像', src: profile.avatar ? API_BASE + profile.avatar : '', hidden: !profile.avatar });
+    const avatar = h('img', { class: 'profile-avatar', alt: '头像', hidden: true });
+    let avatarRevision=0;
+    async function showAvatar(url){
+      const revision=++avatarRevision;avatar.hidden=true;avatar.removeAttribute('src');
+      if(!url)return;
+      // An <img src> cannot attach the exported frontend's admission header.
+      // Use the shared authenticated client; data URLs need no object-URL lifecycle.
+      const response=await GET(url+'?v='+Date.now()),blob=await response.blob();
+      if(!container.isConnected||revision!==avatarRevision)return;
+      const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('头像读取失败'));reader.readAsDataURL(blob);});
+      if(!container.isConnected||revision!==avatarRevision)return;
+      avatar.src=data;avatar.hidden=false;
+    }
     const file = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', 'aria-label': '上传头像' });
     const error = h('p', { role: 'status', class: 'md-body-s' });
     const save = h('button', { class: 'btn btn-filled', onClick: async () => {
@@ -1127,8 +1139,7 @@ async function loadProfileEditor(container) {
         }
         error.textContent = '公开资料已保存';
         const updated = await GET('/api/user/profile');
-        avatar.hidden = !updated.profile.avatar;
-        if (updated.profile.avatar) avatar.src = API_BASE + updated.profile.avatar + '?v=' + Date.now();
+        await showAvatar(updated.profile.avatar);
         file.value = '';
       } catch (e) { error.textContent = (error.textContent ? '网名与简介已保存；头像未完成：' : '') + e.message; } finally { save.disabled = false; }
     } }, '保存公开资料');
@@ -1137,8 +1148,9 @@ async function loadProfileEditor(container) {
       avatar, h('label', {}, '网名', name), h('label', {}, '账户简介', bio), file,
       h('p', { class: 'muted md-body-s' }, 'JPEG / PNG / WebP，最大 5MB；自动裁剪为 256 像素头像。存储由管理员配置。'),
       h('div', { class: 'row wrap gap-8' }, save, h('button', { class: 'btn btn-outlined', onClick: async () => {
-        try { await DEL('/api/user/profile/avatar'); avatar.hidden = true; file.value = ''; error.textContent = '头像已移除'; } catch (e) { error.textContent = e.message; }
+        try { await DEL('/api/user/profile/avatar'); await showAvatar(null); file.value = ''; error.textContent = '头像已移除'; } catch (e) { error.textContent = e.message; }
       } }, '移除头像')), error));
+    try{await showAvatar(profile.avatar);}catch(e){if(container.isConnected)error.textContent='头像加载失败：'+e.message;}
   } catch (e) { if (container.isConnected) container.append(h('p', {}, '资料加载失败：' + e.message)); }
 }
 
