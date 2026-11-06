@@ -393,3 +393,7 @@
 .admin-app :is(.admin-page,.dialog) .tf-input { min-width:0; max-width:100%; }
 @media(max-width:900px) { .admin-page .two-col { grid-template-columns:minmax(0,1fr); } }
 @media(max-width:600px) { .admin-page .audit-item { grid-template-columns:minmax(0,1fr); gap:4px; } }
+
+/* Entry verification must cover the shell independently of authentication state. */
+.entry-gate { position:fixed; inset:0; z-index:900; overflow:auto; background:var(--md-surface); }
+.entry-gate .auth-note { overflow-wrap:anywhere; }

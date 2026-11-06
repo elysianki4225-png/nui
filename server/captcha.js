@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import {HttpError,readJson} from './util.js';
 export const CAPTCHA_PROVIDERS={turnstile:'https://challenges.cloudflare.com/turnstile/v0/siteverify',recaptcha:'https://www.google.com/recaptcha/api/siteverify',hcaptcha:'https://api.hcaptcha.com/siteverify'};
-export function publicCaptcha(s) {const c=s.captcha||{};return {enabled:!!c.enabled,provider:c.provider||'turnstile',siteKey:c.siteKey||''};}
+export function publicCaptcha(s) {const c=s.captcha||{};return {enabled:!!c.enabled,provider:c.provider||'turnstile',siteKey:c.siteKey||'',entryGate:!!c.entryGate};}
 // Only authenticated configuration tests may receive these fixed diagnostic messages.
 // Never echo upstream error text, hostnames, secrets or response tokens.
 const verificationErrors={
@@ -64,7 +64,10 @@ export function registerCaptchaRoutes({route,requireAdmin},{store,cfg,pool},capt
   route('PATCH','/api/admin/captcha',async(req,res,p,ip)=>{
     requireAdmin(req);const b=await readJson(req,16000),old=store.state.settings.captcha||{};
     if(typeof b.enabled!=='boolean'||b.version!==(old.version||0))throw new HttpError(409,'配置已变化，请刷新后重试');
-    let c={...old,enabled:b.enabled,version:(old.version||0)+1};
+    const entryGate=b.entryGate??old.entryGate??false;
+    if(typeof entryGate!=='boolean')throw new HttpError(400,'访问验证开关必须为布尔值','BAD_ENTRY_GATE');
+    if(b.enabled&&entryGate&&b.provider!=='turnstile')throw new HttpError(400,'进入前验证只支持 Cloudflare Turnstile，请先关闭该开关再切换服务商','BAD_ENTRY_GATE');
+    let c={...old,enabled:b.enabled,entryGate,version:(old.version||0)+1};
     if(b.enabled){
       if(!Object.hasOwn(CAPTCHA_PROVIDERS,b.provider)||typeof b.siteKey!=='string'||!b.siteKey.trim()||b.siteKey.length>256)throw new HttpError(400,'请选择服务商并填写 Site Key');
       const secret=b.secret || (old.provider===b.provider&&old.siteKey===b.siteKey?old.secret:'');

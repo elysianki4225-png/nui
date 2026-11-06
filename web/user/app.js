@@ -1,3 +1,4 @@
+import {startEntryGate} from '/assets/js/entry-gate.js';
 import { requestCaptcha } from '/assets/js/captcha.js';
 import { Organization, installOrganizationDrag } from '/assets/js/organization.js';
 import { loadAppearance } from '/assets/js/appearance.js';
@@ -33,7 +34,9 @@ const S = {
 // ============================ 启动 ============================
 boot();
 async function boot() {
-  initTheme(); initRipple(); loadSprite(); loadAppearance();
+  initTheme(); initRipple(); loadSprite();
+  await startEntryGate($app,()=>{cleanupSession(false);sessionStorage.removeItem(REMEMBER_KEY);S.view='lock';clear($app);});
+  loadAppearance();
   if (!cryptoAvailable()) {
     $app.append(h('div', { class: 'auth-wrap' }, h('div', { class: 'auth-card text-center' },
       icon('error', 'xl'), h('h2', {}, '需要安全环境'),

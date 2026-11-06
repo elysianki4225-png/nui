@@ -1,3 +1,4 @@
+import {EntryGate,registerEntryRoutes} from './entry-gate.js';
 import { Captcha, registerCaptchaRoutes } from './captcha.js';
 import { RiskControl, registerRiskRoutes } from './risk.js';
 import { registerAccelerationRoutes } from './acceleration.js';
@@ -25,6 +26,7 @@ export function createApi(ctx) {
   const routes = [];
   const risk = new RiskControl(store);
   const captcha = new Captcha(store,cfg);
+  const entryGate = new EntryGate(store);
   const route = (method, pattern, handler, opts = {}) => {
     const keys = [];
     const regex = new RegExp('^' + pattern.replace(/:[^/]+/g, (m) => { keys.push(m.slice(1)); return '([^/]+)'; }) + '$');
@@ -221,6 +223,7 @@ export function createApi(ctx) {
   });
 
   registerCaptchaRoutes(helpers,ctx,captcha);
+  registerEntryRoutes(helpers,ctx,captcha,entryGate);
   registerRiskRoutes(helpers,ctx,risk);
   registerUserRoutes(helpers, ctx);
   registerAdminRoutes(helpers, ctx);
@@ -239,6 +242,10 @@ export function createApi(ctx) {
       sendError(res, 429, '请求过于频繁', 'RATE_LIMIT');
       return;
     }
+    const adminPublicProfile = /^\/api\/(profiles|avatars)\//.test(pathname) && !!getAdmin(req);
+    if(entryGate.protects(pathname) && !adminPublicProfile && !entryGate.allowed(req,ip)){
+      sendError(res,403,'首次访问、通行已过期或 IP 已变化，请先完成访问验证','ENTRY_REQUIRED');return;
+    }
     const method = req.method;
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       try { csrfCheck(req); } catch (e) { sendError(res, e.status || 403, e.message, e.code); return; }
@@ -253,7 +260,7 @@ export function createApi(ctx) {
       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
       const storageControl = pathname.startsWith('/api/admin/storage/');
       const authOnly = /\/(login|logout)$/.test(pathname);
-      const securityControl = ['/api/admin/risk','/api/admin/risk/unblock','/api/admin/captcha'].includes(pathname);
+      const securityControl = ['/api/entry','/api/admin/risk','/api/admin/risk/unblock','/api/admin/captcha'].includes(pathname);
       if (mutating && !storageControl && !authOnly && !securityControl && store.state.settings.storageMigration) {
         sendError(res, 503, '管理员正在迁移存储，暂时只读，请稍后重试', 'STORAGE_MIGRATING'); return;
       }
