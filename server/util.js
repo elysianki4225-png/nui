@@ -3,7 +3,7 @@ import { behindCdn, originForRequest } from './domain.js';
 
 export { behindCdn };
 export const MB = 1024 * 1024;
-export const VERSION = '3.0.1';
+export const VERSION = '3.0.2';
 
 export function randomId(bytes = 12) {
   return crypto.randomBytes(bytes).toString('base64url');
