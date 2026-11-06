@@ -7,6 +7,9 @@ const event=(target,type)=>{const e=new w.MouseEvent(type,{bubbles:true,button:0
 (async()=>{let clicks=0;other.onclick=()=>clicks++;const dispose=w.Org.installOrganizationDrag(c,()=>{});
  event(handle,'pointerdown');await new Promise(r=>setTimeout(r,210));assert.equal(w.document.querySelectorAll('.org-ghost').length,1);
  event(handle,'pointercancel');other.click();assert.equal(clicks,1);assert.equal(w.document.querySelectorAll('.org-ghost').length,0);
+ c.releasePointerCapture=()=>event(c,'lostpointercapture');
+ event(handle,'pointerdown');await new Promise(r=>setTimeout(r,210));event(handle,'pointerup');other.click();assert.equal(clicks,1,'normal capture release must preserve synthetic-click suppression');other.click();assert.equal(clicks,2);
+ event(handle,'pointerdown');await new Promise(r=>setTimeout(r,210));w.dispatchEvent(new w.Event('blur'));assert.equal(w.document.querySelectorAll('.org-ghost').length,0);
  c.setPointerCapture=()=>{throw Error('pointer ended');};event(handle,'pointerdown');await new Promise(r=>setTimeout(r,210));assert.equal(w.document.querySelectorAll('.org-ghost').length,0);dispose();dom.window.close();
  const source=fs.readFileSync('web/user/app.js','utf8'),data={order:['m:a','m:b','m:c']};
  const ctx={S:{organization:{},el:{scroll:{querySelectorAll:()=>[]}},view:'locked'},getVisibleItems:()=>[{id:'c'},{id:'b'},{id:'a'}],changeOrganization:async fn=>fn(data)};

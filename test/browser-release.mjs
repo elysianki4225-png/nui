@@ -1,3 +1,4 @@
+import {checkDragPreview} from './drag-preview.mjs';
 // Optional isolated real-browser audit. Set NUI_BROWSER_DEPS to npm prefix containing
 // playwright-core and @sparticuz/chromium. No production data or external services used.
 import { createRequire } from 'node:module';
@@ -272,5 +273,6 @@ try {
  await user.waitForFunction(()=>{const img=document.querySelector('.profile-avatar');return img&&!img.hidden&&img.complete&&img.naturalWidth>0;});
  assert.equal(avatarRequests,1);assert((await user.locator('.profile-avatar').getAttribute('src')).startsWith('data:image/'));
  console.log('PASS exported avatar uses authenticated admission-aware fetch and renders a local data URL');
+ await checkDragPreview(user);
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}
