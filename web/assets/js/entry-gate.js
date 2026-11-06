@@ -4,7 +4,7 @@ import {requestCaptcha} from './captcha.js';
 // Blocks boot before any account/key recovery. Runtime failure locks private state;
 // never replays a failed mutation automatically after verification.
 export function startEntryGate(app,onBlocked=()=>{}) {
-  let initial=true,checking=false,verifying=false,blocked=false,card=null,status,button,resolveBoot;
+  let enabled=null,initial=true,checking=false,verifying=false,blocked=false,card=null,status,button,resolveBoot;
   const ready=new Promise(resolve=>{resolveBoot=resolve;});
   async function bounded(fn){
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
@@ -47,11 +47,12 @@ export function startEntryGate(app,onBlocked=()=>{}) {
     checking=true;
     try{
       const state=await readState();
+      enabled=state.enabled===true;
       if(!state.required){allow();return;}
       const newlyBlocked=!blocked;
       show('首次访问、通行到期或 IP 已变化，请完成验证。');
       if(auto||newlyBlocked)await verify(state.captcha);
-    }catch(e){show('无法检查访问权限，请重试。'+e.message);}
+    }catch(e){if(initial||enabled!==false||blocked)show('无法检查访问权限，请重试。'+e.message);}
     finally{checking=false;}
   }
   window.addEventListener('memo-entry-required',()=>{

@@ -225,6 +225,12 @@ try {
  await user.locator('.nav-rail-item').filter({hasText:'设置'}).click();await user.getByLabel('网名',{exact:true}).waitFor();
  for(const theme of ['light','dark'])for(const width of [320,768,1440]){await user.setViewportSize({width,height:900});await user.evaluate(t=>document.documentElement.dataset.theme=t,theme);await auditFields(user);}
  console.log('PASS user folder dialogs and public profile input visibility in light/dark mobile/desktop');
+ // With admission confirmed disabled, a transient status-check outage must not clear drafts/UI.
+ await user.route('**/api/entry',r=>r.abort());
+ await user.evaluate(()=>window.dispatchEvent(new Event('online')));await user.waitForTimeout(300);
+ assert(await user.locator('#app').evaluate(e=>!e.hidden&&e.textContent.length>0));
+ assert.equal(await user.locator('.entry-gate').count(),0);await user.unroute('**/api/entry');
+ console.log('PASS disabled entry gate: transient status-check failure does not lock private UI');
  // Entry-screen behavior with controlled server admission state and SDK callbacks.
  const visitor=await browser.newPage();visitor.on('pageerror',e=>errors.push(e.message));
  let required=true,meRequests=0;
@@ -255,5 +261,16 @@ try {
  await Promise.all([user.waitForEvent('load'),user.evaluate(()=>window.finishEntry('new-ip-ok'))]);
  await user.getByText('Release browser memo',{exact:true}).waitFor();assert.equal(writes,1,'never replay a rejected mutation');
  console.log('PASS entry screen: first visit blocks account recovery, cancel stays blocked, acceptance/reload, IP rejection locks private UI and never replays writes');
+ // Export-mode avatar requests must carry admission/auth headers; <img src> cannot do this.
+ await user.addInitScript(base=>{window.__MEMO_CONFIG__={apiBase:base};localStorage.setItem('memo-entry:'+base,'avatar-admission');},base);
+ let avatarRequests=0;
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGYQAAAAASUVORK5CYII=','base64');
+ await user.route('**/api/user/profile',r=>r.fulfill({json:{ok:true,profile:{nickname:'avatar-test',bio:'public',avatar:'/api/avatars/avatar-test'}}}));
+ await user.route('**/api/avatars/avatar-test?*',r=>{avatarRequests++;assert.equal(r.request().headers()['x-memo-entry'],'avatar-admission');assert(r.request().headers().authorization?.startsWith('Bearer '));return r.fulfill({contentType:'image/png',body:png});});
+ await user.reload();await user.getByText('Release browser memo',{exact:true}).waitFor();
+ await user.locator('.nav-rail-item').filter({hasText:'设置'}).click();
+ await user.waitForFunction(()=>{const img=document.querySelector('.profile-avatar');return img&&!img.hidden&&img.complete&&img.naturalWidth>0;});
+ assert.equal(avatarRequests,1);assert((await user.locator('.profile-avatar').getAttribute('src')).startsWith('data:image/'));
+ console.log('PASS exported avatar uses authenticated admission-aware fetch and renders a local data URL');
  assert.deepEqual(errors,[]);console.log('PASS Chromium: 12 admin pages, acceleration default-off/unsafe-target refusal/responsive form, native GIF processing/upload, desktop/tablet/mobile/landscape bounds, registration/HKDF/AES-GCM/Worker decryption, remembered reload, repeated filters; no page errors');
 } catch(e){console.error(logs);throw e;} finally {await browser?.close();child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}
