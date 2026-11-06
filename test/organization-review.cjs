@@ -1,0 +1,16 @@
+const {JSDOM}=require(process.env.NUI_JSDOM_MODULE||'jsdom');
+const {buildSync}=require('esbuild');const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const dom=new JSDOM('<div id="list"><div data-order-key="f:a"><button class="org-drag">drag</button></div><button id="other">other</button></div>',{url:'https://test.example',runScripts:'outside-only',pretendToBeVisual:true});
+dom.window.eval(buildSync({entryPoints:['web/assets/js/organization.js'],bundle:true,write:false,format:'iife',globalName:'Org'}).outputFiles[0].text);
+const w=dom.window,c=w.document.querySelector('#list'),handle=c.querySelector('.org-drag'),other=c.querySelector('#other');c.setPointerCapture=()=>{};c.releasePointerCapture=()=>{};w.document.elementFromPoint=()=>handle;
+const event=(target,type)=>{const e=new w.MouseEvent(type,{bubbles:true,button:0,cancelable:true});Object.defineProperty(e,'pointerId',{value:1});target.dispatchEvent(e);};
+(async()=>{let clicks=0;other.onclick=()=>clicks++;const dispose=w.Org.installOrganizationDrag(c,()=>{});
+ event(handle,'pointerdown');await new Promise(r=>setTimeout(r,210));assert.equal(w.document.querySelectorAll('.org-ghost').length,1);
+ event(handle,'pointercancel');other.click();assert.equal(clicks,1);assert.equal(w.document.querySelectorAll('.org-ghost').length,0);
+ c.setPointerCapture=()=>{throw Error('pointer ended');};event(handle,'pointerdown');await new Promise(r=>setTimeout(r,210));assert.equal(w.document.querySelectorAll('.org-ghost').length,0);dispose();dom.window.close();
+ const source=fs.readFileSync('web/user/app.js','utf8'),data={order:['m:a','m:b','m:c']};
+ const ctx={S:{organization:{},el:{scroll:{querySelectorAll:()=>[]}},view:'locked'},getVisibleItems:()=>[{id:'c'},{id:'b'},{id:'a'}],changeOrganization:async fn=>fn(data)};
+ vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('async function reorderOrganization('),source.indexOf('\nfunction renderMemos()',source.indexOf('async function reorderOrganization('))),ctx);
+ await ctx.reorderOrganization('m:a','m:b');assert.deepEqual(Array.from(data.order),['m:c','m:a','m:b']);
+ console.log('PASS organization: cancelled drag preserves next click, lost pointer is safe, reorder follows visible sort rather than stale manual ranks');
+})().catch(e=>{dom.window.close();console.error(e);process.exitCode=1;});

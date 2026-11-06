@@ -253,7 +253,8 @@ export function createApi(ctx) {
       const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
       const storageControl = pathname.startsWith('/api/admin/storage/');
       const authOnly = /\/(login|logout)$/.test(pathname);
-      if (mutating && !storageControl && !authOnly && store.state.settings.storageMigration) {
+      const securityControl = ['/api/admin/risk','/api/admin/risk/unblock','/api/admin/captcha'].includes(pathname);
+      if (mutating && !storageControl && !authOnly && !securityControl && store.state.settings.storageMigration) {
         sendError(res, 503, '管理员正在迁移存储，暂时只读，请稍后重试', 'STORAGE_MIGRATING'); return;
       }
       if (mutating) pool.activeWrites++;

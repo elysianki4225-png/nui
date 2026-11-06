@@ -393,9 +393,11 @@ export function registerAdminRoutes(h, ctx) {
     const url = new URL(req.url, 'http://x');
     let base = (url.searchParams.get('base') || cfg.userUrl || '').trim().replace(/\/+$/, '');
     if (!/^https?:\/\//.test(base)) base = `https://${base}`;
+    let parsed;try{parsed=new URL(base);}catch{throw new HttpError(400,'无效 API 地址','BAD_API_BASE');}
+    if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password||parsed.search||parsed.hash)throw new HttpError(400,'API 地址不能包含凭据、查询参数或片段','BAD_API_BASE');
     const tpl = fs.readFileSync(EXPORT_TEMPLATE, 'utf8');
     const config = { apiBase: base, siteName: store.state.settings.siteName, exportedAt: nowSec(), version: VERSION };
-    const html = tpl.replace('/*__MEMO_CONFIG__*/null', JSON.stringify(config));
+    const html = tpl.replace('/*__MEMO_CONFIG__*/null', () => JSON.stringify(config).replace(/</g,'\\u003c').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029'));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Disposition': 'attachment; filename="index.html"', 'Cache-Control': 'no-store' });
     res.end(html);
     store.audit(store.state.admin?.username || 'admin', 'frontend.export', `导出单文件前端 base=${base}`);

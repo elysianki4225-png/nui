@@ -47,7 +47,7 @@ assert.equal(payload.adminOrigin.nat.publicHttpsPort,18443);assert(!payload.nat?
 assert.equal(payload.adminCfApiToken,'ADMIN-TOKEN');assert.equal(payload.certPem,'CERT');assert.equal(payload.adminCertPem,'ADMIN-CERT');
 const independence=()=>[...document.querySelectorAll('label')].find(l=>l.textContent==='管理端使用独立配置').querySelector('input');
 for(const checked of [false,true]) {const el=independence();el.checked=checked;el.dispatchEvent(new dom.window.Event('change'));}
-assert.equal(byLabel('回源 HTTPS 端口').querySelector('input').value,'8443');
+assert.equal(byLabel('机器内部 HTTPS 监听端口').querySelector('input').value,'8443');
 let finish;ctx.POST=()=>new Promise(resolve=>{finish=resolve;});
 click('检测 DNS 解析');click('用户界面');finish({addresses:['9.9.9.9']});await new Promise(r=>setTimeout(r,0));
 assert(!document.body.textContent.includes('9.9.9.9'),'late admin DNS result must not enter user editor');

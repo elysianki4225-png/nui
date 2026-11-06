@@ -6,7 +6,7 @@ export class Captcha {
   constructor(store,cfg,fetcher=fetch){this.store=store;this.cfg=cfg;this.fetcher=fetcher;this.used=new Map();this.pending=0;}
   async verify(c,token,ip) {
     if(typeof token!=='string'||!token||token.length>8192)throw new HttpError(400,'请先完成人机验证','CAPTCHA_REQUIRED');
-    if(!CAPTCHA_PROVIDERS[c.provider]||!c.secret)throw new HttpError(503,'人机验证尚未正确配置','CAPTCHA_UNAVAILABLE');
+    if(!Object.hasOwn(CAPTCHA_PROVIDERS,c.provider)||!c.secret)throw new HttpError(503,'人机验证尚未正确配置','CAPTCHA_UNAVAILABLE');
     const now=Date.now();for(const [key,until] of this.used)if(until<now)this.used.delete(key);
     const digest=crypto.createHash('sha256').update(token).digest('hex');
     if(this.used.has(digest))throw new HttpError(400,'验证已使用，请重新验证','CAPTCHA_REPLAY');
@@ -22,9 +22,9 @@ export class Captcha {
       if(result.success!==true||!(c.hostnames||[]).includes(hostname)||(c.provider==='turnstile'&&result.action!=='auth'))throw new HttpError(400,'人机验证未通过，请重新验证并检查域名配置','CAPTCHA_FAILED');
       const ts=Date.parse(result.challenge_ts);if(!Number.isFinite(ts)||Date.now()-ts>300000||ts>Date.now()+60000)throw new HttpError(400,'验证已过期，请重试','CAPTCHA_EXPIRED');
     }catch(e){if(e instanceof HttpError)throw e;throw new HttpError(503,'验证服务暂不可用，请稍后重试','CAPTCHA_UNAVAILABLE');}
-    finally{clearTimeout(timer);this.pending--;}
+    finally{clearTimeout(timer);ctrl.abort();this.pending--;}
   }
-  async check(body,ip){const c=this.store.state.settings.captcha;if(c?.enabled)await this.verify(c,body.captchaToken,ip);}
+  async check(body,ip){const c=this.store.state.settings.captcha;if(c?.enabled){await this.verify(c,body.captchaToken,ip);const current=this.store.state.settings.captcha;if(current?.enabled && (current.version||0)!==(c.version||0))throw new HttpError(409,'验证配置已更新，请重新验证','CAPTCHA_CHANGED');}}
 }
 export function registerCaptchaRoutes({route,requireAdmin},{store,cfg,pool},captcha){
   const defaults=()=>[...new Set([cfg.userHost,cfg.adminHost].filter(Boolean).map(h=>h.split(':')[0]))];

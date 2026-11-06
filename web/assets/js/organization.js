@@ -27,7 +27,7 @@ export class Organization {
 
 // Delegated pointer handling survives virtual row recycling; at most one ghost and RAF.
 export function installOrganizationDrag(container, drop) {
-  let state=null,timer=0,raf=0,ghost=null,target=null,suppress=false;
+  let state=null,timer=0,raf=0,ghost=null,target=null,suppress=false,suppressTimer=0;
   const cleanup=()=>{const pointer=state?.id;state=null;if(pointer!=null){try{container.releasePointerCapture(pointer);}catch{}}clearTimeout(timer);cancelAnimationFrame(raf);ghost?.remove();ghost=null;target?.classList.remove('org-target');target=null;state=null;};
   const frame=()=>{
     if(!state||!ghost)return;
@@ -40,15 +40,15 @@ export function installOrganizationDrag(container, drop) {
   };
   const down=e=>{
     const handle=e.target.closest('.org-drag');if(!handle||e.button!==0)return;
-    cleanup();const row=handle.closest('[data-order-key]');if(!row)return;
+    cleanup();suppress=false;clearTimeout(suppressTimer);const row=handle.closest('[data-order-key]');if(!row)return;
     state={id:e.pointerId,key:row.dataset.orderKey,x:e.clientX,y:e.clientY};
-    container.setPointerCapture(e.pointerId);
+    try{container.setPointerCapture(e.pointerId);}catch{cleanup();return;}
     timer=setTimeout(()=>{if(!state)return;ghost=row.cloneNode(true);ghost.classList.add('org-ghost');ghost.style.width=Math.min(row.getBoundingClientRect().width,260)+'px';ghost.setAttribute('aria-hidden','true');document.body.append(ghost);suppress=true;frame();},180);
   };
   const move=e=>{if(state&&e.pointerId===state.id){state.x=e.clientX;state.y=e.clientY;e.preventDefault();}};
-  const up=e=>{if(!state||e.pointerId!==state.id)return;const from=state.key,to=target?.dataset.orderKey,active=!!ghost;cleanup();if(active&&to&&from!==to)drop(from,to);};
-  const cancel=()=>cleanup();
+  const up=e=>{if(!state||e.pointerId!==state.id)return;const from=state.key,to=target?.dataset.orderKey,active=!!ghost;cleanup();suppressTimer=setTimeout(()=>{suppress=false;},0);if(active&&to&&from!==to)drop(from,to);};
+  const cancel=()=>{cleanup();suppress=false;clearTimeout(suppressTimer);};
   const click=e=>{if(suppress){e.preventDefault();e.stopPropagation();suppress=false;}};
   container.addEventListener('pointerdown',down);container.addEventListener('pointermove',move,{passive:false});container.addEventListener('pointerup',up);container.addEventListener('pointercancel',cancel);container.addEventListener('lostpointercapture',cancel);container.addEventListener('click',click,true);
-  return ()=>{cleanup();container.removeEventListener('pointerdown',down);container.removeEventListener('pointermove',move);container.removeEventListener('pointerup',up);container.removeEventListener('pointercancel',cancel);container.removeEventListener('lostpointercapture',cancel);container.removeEventListener('click',click,true);};
+  return ()=>{cancel();container.removeEventListener('pointerdown',down);container.removeEventListener('pointermove',move);container.removeEventListener('pointerup',up);container.removeEventListener('pointercancel',cancel);container.removeEventListener('lostpointercapture',cancel);container.removeEventListener('click',click,true);};
 }

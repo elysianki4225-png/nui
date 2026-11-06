@@ -109,6 +109,7 @@ export function registerUserRoutes(h, ctx) {
     const url = new URL(req.url, 'http://x');
     const limit = clampInt(url.searchParams.get('limit'), 1, 500, 200);
     const cursor = url.searchParams.get('cursor') || null;
+    if(cursor && !/^\d{1,12}:[A-Za-z0-9_-]{1,80}$/.test(cursor))throw new HttpError(400,'无效分页游标','BAD_CURSOR');
     const type = url.searchParams.get('type') || 'all';
     const pinned = url.searchParams.get('pinned') === '1';
     const { items, nextCursor } = store.listMemos(user.account, { cursor, limit, type, pinned });

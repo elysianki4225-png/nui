@@ -3,7 +3,7 @@ const providers={turnstile:{url:'https://challenges.cloudflare.com/turnstile/v0/
 const loads=new Map();
 function load(provider){
   if(loads.has(provider))return loads.get(provider);
-  const p=providers[provider];if(!p)return Promise.reject(new Error('不支持的验证服务'));
+  const p=Object.hasOwn(providers,provider)?providers[provider]:null;if(!p)return Promise.reject(new Error('不支持的验证服务'));
   const promise=new Promise((resolve,reject)=>{let done=false;const script=document.createElement('script');script.src=p.url;script.async=true;let timer=setTimeout(()=>finish(new Error('验证组件加载超时，请检查网络')),15000);
     function finish(error){if(done)return;done=true;clearTimeout(timer);script.onload=script.onerror=null;if(error){script.remove();loads.delete(provider);reject(error);}else resolve(window[p.global]);}
     script.onerror=()=>finish(new Error('无法加载验证组件，请检查网络'));script.onload=()=>{const api=window[p.global];if(api?.ready)api.ready(()=>finish());else if(api?.render)finish();else finish(new Error('验证组件未就绪'));};document.head.append(script);

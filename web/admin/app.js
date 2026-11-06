@@ -740,7 +740,7 @@ async function renderDomain(page) {
     }
     // 域名 panel
     const domainPanel = h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '2. 填写访问域名')),
+      h('div', { class: 'panel-head' }, icon('language'), h('h3', {}, '1. 填写访问域名')),
       endpoint === 'user' ? h('div', { style: { marginBottom: '12px' } }, seg([['domain', '自定义域名'], ['ip', 'nip.io / IP']], () => f.mode, (v) => { f.mode = v; })) : null,
       field(endpoint === 'admin' ? '管理域名' : '用户域名', text('userHost', 'm.example.com', { spellcheck: 'false' }), '不含协议与端口，例如 m.example.com'),
       h('div', { class: 'row gap-8 wrap', style: { marginTop: '4px' } },
@@ -749,15 +749,15 @@ async function renderDomain(page) {
       dnsResult, (f.mode === 'domain' || endpoint === 'admin' || natOn) ? dnsHelp() : h('p', { class: 'muted' }, '保留自动生成的地址，无需手动添加 DNS 记录。'), diagResult);
     // CDN panel
     const cdnPanel = h('div', { class: 'panel' },
-      h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, '1. 选择访问方式')),
+      h('div', { class: 'panel-head' }, icon('cloud'), h('h3', {}, '2. 选择访问方式')),
       h('div', { style: { marginBottom: '12px' } }, seg([['none', '直连（无 CDN）'], ['cloudflare', 'Cloudflare 小黄云'], ['custom', '第三方 CDN']], () => f.cdn, (v) => { f.cdn = v; if (v !== 'none' && !['flexible', 'full', 'strict'].includes(f.sslMode)) f.sslMode = haveCert() ? 'strict' : 'flexible'; if (v === 'cloudflare') f.realIpHeader = 'cf-connecting-ip'; else if (v === 'custom') f.realIpHeader = 'x-forwarded-for'; })),
       f.cdn === 'custom' ? field('CDN 名称', text('cdnName', '例如 阿里云 CDN / 腾讯云 EdgeOne')) : null,
       cdnOn ? h('div', { class: 'domain-technical' },
         h('div', { class: 'md-body-s muted', style: { margin: '4px 0 8px' } }, '加密模式（CDN 到源站）'),
         h('div', { style: { marginBottom: '12px' } }, seg([['flexible', '简易 · Flexible'], ['full', '加密 · Full'], ['strict', '严格 · Strict']], () => f.sslMode, (v) => { f.sslMode = v; })),
-        h('div', { class: 'two-col' },
+        !natOn ? h('div', { class: 'two-col' },
           field('回源 HTTP 端口', num('cfHttpPort', 1, 65535), 'Flexible 使用，默认 80'),
-          field('回源 HTTPS 端口', num('cfHttpsPort', 1, 65535), 'Full/Strict 使用，默认 443，可填冷门端口')),
+          field('回源 HTTPS 端口', num('cfHttpsPort', 1, 65535), 'Full/Strict 使用，默认 443，可填冷门端口')) : h('p',{class:'muted'},'内部监听端口在下方 NAT 配置中设置；CF 回源规则使用公网映射端口。'),
         f.cdn === 'cloudflare' ? portPicks() : null,
         h('label', { class: 'tf editor-field' }, h('span', { class: 'tf-box' },
           (() => { const sel = h('select', { class: 'tf-input' }, ...[['cf-connecting-ip', 'CF-Connecting-IP（Cloudflare）'], ['x-forwarded-for', 'X-Forwarded-For（首个 IP）'], ['x-real-ip', 'X-Real-IP'], ['true-client-ip', 'True-Client-IP']].map(([v, l]) => h('option', { value: v, selected: f.realIpHeader === v }, l))); sel.addEventListener('change', () => { f.realIpHeader = sel.value; }); return sel; })(),

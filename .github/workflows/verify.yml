@@ -18,7 +18,8 @@ jobs:
       - run: npm ci
       - name: Install isolated UI test dependencies
         run: |
-          npm install --prefix "$RUNNER_TEMP/nui-ui" --no-package-lock jsdom@24.1.3 @napi-rs/canvas@0.1.80
+          npm install --prefix "$RUNNER_TEMP/nui-ui" --no-package-lock jsdom@24.1.3 @napi-rs/canvas@0.1.80 playwright-core@1.56.1 @sparticuz/chromium@141.0.0
+          echo "NUI_BROWSER_DEPS=$RUNNER_TEMP/nui-ui" >> "$GITHUB_ENV"
           echo "NUI_JSDOM_MODULE=$RUNNER_TEMP/nui-ui/node_modules/jsdom" >> "$GITHUB_ENV"
           echo "NUI_CANVAS_MODULE=$RUNNER_TEMP/nui-ui/node_modules/@napi-rs/canvas" >> "$GITHUB_ENV"
       - name: Install pinned Caddy for real configuration validation

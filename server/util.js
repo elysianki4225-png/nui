@@ -3,7 +3,7 @@ import { behindCdn, originForRequest } from './domain.js';
 
 export { behindCdn };
 export const MB = 1024 * 1024;
-export const VERSION = '2.4.0';
+export const VERSION = '3.0.0';
 
 export function randomId(bytes = 12) {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -93,7 +93,9 @@ export async function readJson(req, limit = 1 * MB) {
   const buf = await readBody(req, limit);
   if (!buf.length) return {};
   try {
-    return JSON.parse(buf.toString('utf8'));
+    const value=JSON.parse(buf.toString('utf8'));
+    if(value===null || typeof value!=='object' || Array.isArray(value))throw new Error('JSON object required');
+    return value;
   } catch {
     throw new HttpError(400, '无效的 JSON', 'BAD_JSON');
   }
@@ -101,14 +103,14 @@ export async function readJson(req, limit = 1 * MB) {
 
 export function parseCookies(req) {
   const header = req.headers.cookie;
-  const out = {};
+  const out = Object.create(null);
   if (!header) return out;
   for (const part of header.split(';')) {
     const idx = part.indexOf('=');
     if (idx < 0) continue;
     const k = part.slice(0, idx).trim();
     const v = part.slice(idx + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (k) { try { out[k] = decodeURIComponent(v); } catch { /* Ignore malformed individual cookies, not the whole request. */ } }
   }
   return out;
 }

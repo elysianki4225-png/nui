@@ -388,7 +388,7 @@ function organizationToolbar() {
   const org=S.organization;
   return h('div',{class:'row wrap gap-8',style:{padding:'8px 16px'}},
     h('button',{class:'btn btn-text btn-sm',onClick:()=>{S.folder='';S.selection.clear();renderMemos();}},'全部文件'),
-    S.folder ? h('span',{},org.data.folders.find(f=>f.id===S.folder)?.name || '文件夹') : null,
+    S.folder ? h('span',{style:{minWidth:0,overflowWrap:'anywhere'}},org.data.folders.find(f=>f.id===S.folder)?.name || '文件夹') : null,
     h('button',{class:'btn btn-tonal btn-sm',disabled:!org.ready,onClick:()=>editFolder()},'新建文件夹'),
     h('span',{class:'muted md-body-s'},org.ready?'按住拖动柄排序；箭头键也可调整位置。文件夹名称与排序已加密。':'文件夹未加载，刷新后重试'));
 }
@@ -433,7 +433,8 @@ async function reorderOrganization(from,to,after=false) {
   const positions=new Map([...S.el.scroll.querySelectorAll('[data-order-key]')].map(el=>[el.dataset.orderKey,el.getBoundingClientRect()]));
   S.sort='manual';
   await changeOrganization(d=>{
-    const keys=[...new Set([...d.order,...visible])].filter(k=>k!==from);
+    const shown=new Set(visible);
+    const keys=[...d.order.filter(k=>!shown.has(k)),...visible].filter(k=>k!==from);
     let at=keys.indexOf(to);if(at<0)return;if(after)at++;keys.splice(at,0,from);d.order=keys;
   });
   if(S.organization!==organization||S.view!=='main'||matchMedia('(prefers-reduced-motion: reduce)').matches)return;

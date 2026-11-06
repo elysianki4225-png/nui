@@ -155,26 +155,27 @@ export class DomainManager {
         out.hints.push('后端进程自检正常不代表公网回源正常；该自检不经过 Caddy、防火墙或 Cloudflare。');
       }
     }
+    if(out.https && !out.https.ok && !out.dns.cloudflare)out.hints.push(`HTTPS 健康检查未通过：${out.https.error||'HTTP '+out.https.status}，请检查证书、代理和访问规则。`);
     if (scheme === 'http' || input.scheme === 'http' || (host === this.cfg.adminHost && this.cfg.adminOrigin ? this.cfg.adminOrigin.sslMode : this.cfg.sslMode) === 'flexible') {
       out.http = await this.#probeUrl(`http://${host}${httpPort===80?'':':'+httpPort}/api/health`);
+      if(!out.http.ok)out.hints.push(`HTTP 健康检查未通过：${out.http.error||'HTTP '+out.http.status}；若强制跳转 HTTPS，请同时检查 HTTPS 入口。`);
     }
     if (!out.hints.length) out.hints.push('未发现明显问题。');
     return out;
   }
 
   async #probeUrl(url) {
-    const t0 = Date.now();
-    const res = { ok: false, status: 0, latencyMs: 0, viaCloudflare: false, server: '', error: null };
+    const t0=Date.now(),ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),8000);
+    const res={ok:false,status:0,latencyMs:0,viaCloudflare:false,server:'',error:null};
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const r = await fetch(url, { signal: ctrl.signal, redirect: 'manual', headers: { 'User-Agent': 'nui-memo-probe' } });
-      clearTimeout(timer);
-      res.status = r.status; res.latencyMs = Date.now() - t0;
-      res.server = r.headers.get('server') || '';
-      res.viaCloudflare = !!(r.headers.get('cf-ray') || /cloudflare/i.test(res.server));
-      res.ok = r.status > 0 && r.status < 500;
-    } catch (e) { res.error = e.name === 'AbortError' ? '超时（8s）' : (e.cause?.code || e.message); res.latencyMs = Date.now() - t0; }
+      const r=await fetch(url,{signal:ctrl.signal,redirect:'manual',headers:{'User-Agent':'nui-memo-probe'}});
+      res.status=r.status;res.server=r.headers.get('server')||'';
+      res.viaCloudflare=!!(r.headers.get('cf-ray')||/cloudflare/i.test(res.server));
+      let size=0;const chunks=[];
+      for await(const chunk of r.body){size+=chunk.length;if(size>16384)throw new Error('诊断响应超过 16KiB');chunks.push(chunk);}
+      if(r.ok){let body;try{body=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{}res.ok=body?.ok===true&&typeof body.version==='string'&&typeof body.uptime==='number';if(!res.ok)res.error='返回内容不是备忘录健康检查响应';}
+    }catch(e){res.error=e.name==='AbortError'?'超时（8s）':(e.cause?.code||e.message);}
+    finally{clearTimeout(timer);ctrl.abort();res.latencyMs=Date.now()-t0;}
     return res;
   }
 
@@ -196,18 +197,18 @@ export class DomainManager {
 
   // 验证 Cloudflare API Token（可用 NUI_CF_API_BASE 覆盖以便测试）
   async verifyCfToken(token) {
-    const t = String(token || '').trim();
-    if (!t) return { ok: false, error: '请填写 API Token' };
-    const base = (process.env.NUI_CF_API_BASE || 'https://api.cloudflare.com/client/v4').replace(/\/+$/, '');
+    const t=String(token||'').trim();if(!t)return {ok:false,error:'请填写 API Token'};
+    const base=(process.env.NUI_CF_API_BASE||'https://api.cloudflare.com/client/v4').replace(/\/+$/,'');
+    const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),10000);
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const r = await fetch(`${base}/user/tokens/verify`, { headers: { Authorization: `Bearer ${t}` }, signal: ctrl.signal });
-      clearTimeout(timer);
-      const j = await r.json();
-      if (j.success && j.result) return { ok: true, status: j.result.status || 'active', expiresOn: j.result.expires_on || null };
-      return { ok: false, error: (j.errors && j.errors[0] && j.errors[0].message) || 'Token 无效' };
-    } catch (e) { return { ok: false, error: e.name === 'AbortError' ? '验证超时' : (e.message || '无法连接 Cloudflare API') }; }
+      const r=await fetch(`${base}/user/tokens/verify`,{headers:{Authorization:`Bearer ${t}`},redirect:'error',signal:ctrl.signal});
+      let size=0;const chunks=[];
+      for await(const chunk of r.body){size+=chunk.length;if(size>16384)throw new Error('oversize');chunks.push(chunk);}
+      const j=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if(r.ok&&j.success&&j.result?.status==='active')return {ok:true,status:'active',expiresOn:j.result.expires_on||null};
+      return {ok:false,error:'Token 未处于有效状态，请检查权限及有效期'};
+    }catch(e){return {ok:false,error:e.name==='AbortError'?'验证超时':'无法验证 Cloudflare Token，请检查网络和权限'};}
+    finally{clearTimeout(timer);ctrl.abort();}
   }
 
   preview(input) {
